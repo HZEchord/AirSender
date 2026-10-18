@@ -29,5 +29,5 @@ def setup_logging(level: str = "INFO", console: bool = True) -> None:
 
     # pyatv / zeroconf 在 DEBUG 時非常吵，除非使用者明確要求
     if level.upper() != "DEBUG":
-        for noisy in ("pyatv", "zeroconf", "asyncio", "urllib3"):
+        for noisy in ("pyatv", "zeroconf", "asyncio", "urllib3", "pychromecast", "async_upnp_client", "aiohttp", "charset_normalizer"):
             logging.getLogger(noisy).setLevel(logging.WARNING)

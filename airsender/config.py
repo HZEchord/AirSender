@@ -7,7 +7,7 @@ import logging
 import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 from . import APP_NAME
 
@@ -61,8 +61,14 @@ class Config:
     device_identifier: Optional[str] = None
     device_name: Optional[str] = None
     device_address: Optional[str] = None
+    device_kind: str = "airplay"  # airplay / cast / dlna / snapcast
+    device_url: str = ""  # DLNA 描述檔 URL 或 Snapcast port
     # 各接收端的配對憑證與密碼：{identifier: {"raop": ..., "airplay": ..., "password": ...}}
-    credentials: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    credentials: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    # 非 AirPlay 輸出
+    http_port: int = 8765  # HTTP WAV 串流伺服器（Google Cast / DLNA 由此拉流）
+    snapcast_servers: list[str] = field(default_factory=list)  # "host" 或 "host:port"
 
     # 延遲相關
     receiver_latency_ms: int = 500  # 接收端緩衝
@@ -82,7 +88,7 @@ class Config:
     log_level: str = "INFO"
 
     @classmethod
-    def load(cls) -> "Config":
+    def load(cls) -> Config:
         path = config_path()
         if not path.exists():
             return cls()

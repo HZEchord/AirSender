@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import List, Optional
+from typing import Optional
 
 import pystray
 from PIL import Image, ImageDraw
@@ -17,7 +17,8 @@ from pystray import Menu, MenuItem
 from . import APP_NAME, __version__, autostart, dialogs, firewall
 from .capture import list_loopback_devices
 from .config import DRIFT_MODES, LATENCY_PRESETS, RESAMPLE_QUALITIES, Config, log_dir
-from .streamer import AirPlayStreamer, Device, State
+from .sinks import HTTP_PULL_KINDS, KIND_LABELS
+from .streamer import Device, State, Streamer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def make_icon_image(active: bool, size: int = 64) -> Image.Image:
         fill=color,
     )
     # 聲波
-    for i, r in enumerate((10, 17, 24)):
+    for r in (10, 17, 24):
         box = [32 * s - r * s, 32 * s - r * s, 32 * s + r * s, 32 * s + r * s]
         draw.arc(box, start=-40, end=40, fill=color, width=max(2, int(4 * s)))
     return img
@@ -57,11 +58,11 @@ def make_icon_image(active: bool, size: int = 64) -> Image.Image:
 class TrayApp:
     def __init__(self) -> None:
         self.config = Config.load()
-        self.devices: List[Device] = []
+        self.devices: list[Device] = []
         self.capture_devices = []
         self._scanning = False
         self._last_notify = 0.0
-        self.streamer = AirPlayStreamer(self.config, self._on_state)
+        self.streamer = Streamer(self.config, self._on_state)
         self.icon = pystray.Icon(
             APP_NAME, make_icon_image(False), APP_NAME, menu=Menu(self._menu_items)
         )
@@ -116,12 +117,16 @@ class TrayApp:
         text = f"狀態：{self.streamer.state.value}"
         if self.streamer.message:
             text += f" - {self.streamer.message}"
-        src = self.streamer.source
-        if self.streamer.state == State.STREAMING and src and src.capture:
-            cap = src.capture.status
-            if cap.running:
-                text += f"\n來源：{cap.device_name} {cap.source_rate} Hz -> {cap.target_rate} Hz"
+        if self.streamer.device:
+            text += f"\n接收端：{KIND_LABELS.get(self.streamer.device.kind, self.streamer.device.kind)}"
+        cap = self.streamer.capture_status
+        if self.streamer.state == State.STREAMING and cap and cap.running:
+            text += f"\n來源：{cap.device_name} {cap.source_rate} Hz -> {cap.target_rate} Hz"
+            src = self.streamer.source
+            if src is not None:
                 text += f"\n本機緩衝 {src.buffered_ms:.0f} ms，漂移補償 {src.drift_ppm:+.0f} ppm"
+            elif self.streamer.http.clients:
+                text += f"\nHTTP 接收端：{', '.join(self.streamer.http.clients)}"
         return text
 
     # ------------------------------------------------------------ 掃描
@@ -134,7 +139,7 @@ class TrayApp:
         def worker() -> None:
             try:
                 self.devices = self.streamer.scan(timeout=5.0)
-                _LOGGER.info("找到 %d 個 AirPlay 接收端", len(self.devices))
+                _LOGGER.info("找到 %d 個接收端", len(self.devices))
                 if then_autostart:
                     saved = next(
                         (
@@ -144,6 +149,8 @@ class TrayApp:
                         ),
                         None,
                     )
+                    if saved is None and self.config.device_kind == "snapcast":
+                        saved = self.streamer.saved_device()
                     if saved:
                         self.streamer.start(saved)
                     elif self.config.device_name:
@@ -316,6 +323,30 @@ class TrayApp:
         except Exception:  # pylint: disable=broad-except
             subprocess.Popen(["explorer", str(log_dir())])
 
+    def _add_snapcast(self) -> None:
+        def worker() -> None:
+            spec = dialogs.ask_string(
+                "請輸入 snapserver 位址（host 或 host:port，預設 port 4953）。\n"
+                "snapserver.conf 需設定：\n"
+                "source = tcp://0.0.0.0:4953?name=AirSender&mode=server&sampleformat=44100:16:2"
+            )
+            if not spec:
+                return
+            try:
+                device = self.streamer.add_snapcast_server(spec.strip())
+            except ValueError:
+                self._notify("位址格式錯誤")
+                return
+            self.devices = [d for d in self.devices if d.identifier != device.identifier] + [device]
+            self._update_menu()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _remove_snapcast(self, spec: str) -> None:
+        self.streamer.remove_snapcast_server(spec)
+        self.devices = [d for d in self.devices if not (d.kind == "snapcast" and d.identifier.endswith(spec if ":" in spec else f"{spec}:4953"))]
+        self._update_menu()
+
     def _quit(self) -> None:
         def worker() -> None:
             try:
@@ -330,19 +361,28 @@ class TrayApp:
         if self._scanning:
             yield MenuItem("掃描中…", None, enabled=False)
         elif not self.devices:
-            yield MenuItem("找不到 AirPlay 接收端", None, enabled=False)
-        for d in self.devices:
-            yield MenuItem(
-                d.label,
-                _call(self._select_device, d),
-                checked=_check(lambda dev=d: (
-                    self.streamer.device is not None
-                    and self.streamer.device.identifier == dev.identifier
-                )),
-                radio=True,
-            )
+            yield MenuItem("找不到任何接收端", None, enabled=False)
+        for kind, label in KIND_LABELS.items():
+            group = [d for d in self.devices if d.kind == kind]
+            if not group:
+                continue
+            note = "（HTTP 拉流，延遲 2–5 秒）" if kind in HTTP_PULL_KINDS else ""
+            yield MenuItem(f"{label}{note}", None, enabled=False)
+            for d in group:
+                yield MenuItem(
+                    "    " + d.label,
+                    _call(self._select_device, d),
+                    checked=_check(lambda dev=d: (
+                        self.streamer.device is not None
+                        and self.streamer.device.identifier == dev.identifier
+                    )),
+                    radio=True,
+                )
         yield Menu.SEPARATOR
         yield MenuItem("重新掃描", lambda icon, item: self._rescan_async())
+        yield MenuItem("新增 Snapcast 伺服器…", _call(self._add_snapcast))
+        for spec in list(self.config.snapcast_servers):
+            yield MenuItem(f"移除 Snapcast {spec}", _call(self._remove_snapcast, spec))
 
     def _latency_items(self):
         for label, ms in LATENCY_PRESETS.items():
@@ -428,14 +468,15 @@ class TrayApp:
     def _pairing_items(self):
         device = self._current_device()
         name = device.name if device else "（尚未選擇接收端）"
+        is_airplay = device is not None and device.kind == "airplay"
         has = bool(device and self.streamer.has_credentials(device))
         yield MenuItem(f"目前接收端：{name}", None, enabled=False)
         yield MenuItem(
             f"配對…{'（已配對）' if has else ''}",
             _call(self._pair_current),
-            enabled=device is not None,
+            enabled=is_airplay,
         )
-        yield MenuItem("設定接收端密碼…", _call(self._set_password_current), enabled=device is not None)
+        yield MenuItem("設定接收端密碼…", _call(self._set_password_current), enabled=is_airplay)
         yield MenuItem("忘記配對與密碼", _call(self._forget_current), enabled=has)
         yield Menu.SEPARATOR
         yield MenuItem("HomePod 不需要配對；Apple TV 開啟「需要裝置驗證」或第三方接收端設了密碼時才需要", None, enabled=False)

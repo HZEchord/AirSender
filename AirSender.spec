@@ -6,6 +6,10 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 hidden = (
     collect_submodules("pyatv")
     + collect_submodules("zeroconf")
+    + collect_submodules("pychromecast")
+    + collect_submodules("async_upnp_client")
+    + collect_submodules("aiohttp")
+    + collect_submodules("airsender")
     + [
         "pystray._win32",
         "PIL.ImageDraw",
@@ -15,7 +19,13 @@ hidden = (
         "numpy",
     ]
 )
-datas = collect_data_files("pyatv") + collect_data_files("miniaudio") + collect_data_files("soxr")
+datas = (
+    collect_data_files("pyatv")
+    + collect_data_files("soxr")
+    + collect_data_files("async_upnp_client")
+    + collect_data_files("pychromecast")
+    + [("THIRD_PARTY_NOTICES.md", "."), ("LICENSE", ".")]
+)
 
 a = Analysis(
     ["run_airsender.py"],

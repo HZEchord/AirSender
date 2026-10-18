@@ -10,8 +10,9 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import pyaudiowpatch as pa
@@ -37,7 +38,7 @@ class CaptureStatus:
     frames_captured: int = field(default=0)
 
 
-def list_loopback_devices() -> List[Tuple[int, str, int]]:
+def list_loopback_devices() -> list[tuple[int, str, int]]:
     """列出所有可擷取的輸出裝置 (index, 名稱, 取樣率)。index 為 loopback 裝置索引。"""
     p = pa.PyAudio()
     try:
@@ -161,13 +162,13 @@ class WasapiLoopbackCapture:
                 # callback 模式：PortAudio 自己的執行緒把每個區塊丟進佇列，這裡的工作執行緒
                 # 以 timeout 等待。好處：stop() 永遠能在 0.25 s 內返回並確實關閉 WASAPI
                 # 串流（阻塞式 read() 在沒有程式播音時會卡住，導致裝置無法釋放）。
-                chunks: "queue.SimpleQueue[bytes]" = queue.SimpleQueue()
+                chunks: queue.SimpleQueue[bytes] = queue.SimpleQueue()
                 status = self.status
 
-                def on_audio(in_data, _frame_count, _time_info, flags):
+                def on_audio(in_data, _frame_count, _time_info, flags, _chunks=chunks, _status=status):
                     if flags & pa.paInputOverflow:
-                        status.overflows += 1
-                    chunks.put(in_data)
+                        _status.overflows += 1
+                    _chunks.put(in_data)
                     return (None, pa.paContinue)
 
                 stream = p.open(
@@ -230,11 +231,11 @@ class WasapiLoopbackCapture:
                 while not self._stop.is_set():
                     try:
                         raw = chunks.get(timeout=0.25)
-                    except queue.Empty:
+                    except queue.Empty:  # noqa: PERF203
                         # 沒有程式在播音時 loopback 不會送資料，這是正常的；
                         # 但若串流本身停了（裝置被拔除），就重新開啟。
                         if not stream.is_active():
-                            raise RuntimeError("擷取串流已停止（裝置被移除或變更？）")
+                            raise RuntimeError("擷取串流已停止（裝置被移除或變更？）") from None
                         if device_changed.is_set():
                             break
                         continue

@@ -1,6 +1,10 @@
-"""AirPlay 串流控制：掃描裝置、連線、串流、自動重連。
+"""串流控制：掃描裝置、連線、串流、自動重連；依接收端種類分派到不同輸出路徑。
 
-所有 pyatv 操作都在專屬的 asyncio 事件迴圈執行緒上進行；對外提供執行緒安全的方法。
+- airplay：pyatv RAOP / AirPlay 2，低延遲（LiveAudioSource 推送）
+- cast / dlna：接收端拉我們的 HTTP WAV 串流（HttpStreamServer），無損但延遲數秒
+- snapcast：TCP 推 raw PCM 給 snapserver
+
+所有非同步操作都在專屬的 asyncio 事件迴圈執行緒上進行；對外提供執行緒安全的方法。
 """
 
 from __future__ import annotations
@@ -9,40 +13,28 @@ import asyncio
 import logging
 import socket
 import threading
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
-from enum import Enum
-from typing import Callable, Dict, List, Optional
+from typing import Optional
 
 import pyatv
 from pyatv.const import Protocol
 from pyatv.interface import MediaMetadata
 
 from . import APP_NAME, firewall, pairing, patches
+from .capture import CaptureStatus
 from .config import Config
+from .httpstream import HttpStreamServer, PcmBroadcaster
 from .live_source import LiveAudioSource
+from .sinks import HTTP_PULL_KINDS
+from .sinks import cast as cast_sink
+from .sinks import dlna as dlna_sink
+from .sinks import snapcast as snapcast_sink
+from .streamer_types import Device, State
 
 _LOGGER = logging.getLogger(__name__)
 
-
-class State(Enum):
-    IDLE = "閒置"
-    CONNECTING = "連線中"
-    STREAMING = "串流中"
-    RECONNECTING = "重新連線中"
-
-
-@dataclass(frozen=True)
-class Device:
-    name: str
-    identifier: str
-    address: str
-    model: str
-
-    @property
-    def label(self) -> str:
-        return f"{self.name}（{self.model}，{self.address}）"
-
+__all__ = ["Streamer", "AirPlayStreamer", "Device", "State"]
 
 StateCallback = Callable[[State, str], None]
 
@@ -61,7 +53,7 @@ def _enable_high_resolution_timer() -> None:
         _LOGGER.debug("無法設定計時器解析度：%s", exc)
 
 
-class AirPlayStreamer:
+class Streamer:
     def __init__(self, config: Config, on_state: Optional[StateCallback] = None) -> None:
         self.config = config
         self._on_state = on_state
@@ -69,11 +61,14 @@ class AirPlayStreamer:
         # 在 125 封包/秒下 CPU 差異落在量測雜訊內（約 4–5% 單核心），故維持預設迴圈。
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
-            target=self._loop.run_forever, name="airplay-loop", daemon=True
+            target=self._loop.run_forever, name="stream-loop", daemon=True
         )
         self._task: Optional[asyncio.Task] = None
         self._atv = None
         self._source: Optional[LiveAudioSource] = None
+        self._sink_set_volume: Optional[Callable[[int], None]] = None
+        self.broadcaster = PcmBroadcaster(self._loop, config)
+        self.http = HttpStreamServer(self._loop, self.broadcaster, config.http_port)
         self.device: Optional[Device] = None
         self.state = State.IDLE
         self.message = ""
@@ -88,6 +83,8 @@ class AirPlayStreamer:
     def shutdown(self) -> None:
         with suppress(Exception):
             self.stop()
+        with suppress(Exception):
+            asyncio.run_coroutine_threadsafe(self.http.stop(), self._loop).result(5)
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=3.0)
 
@@ -98,17 +95,28 @@ class AirPlayStreamer:
 
     @property
     def source(self) -> Optional[LiveAudioSource]:
+        """AirPlay 路徑的即時音源（其他路徑為 None）。"""
         return self._source
 
-    def scan(self, timeout: float = 5.0) -> List[Device]:
+    @property
+    def capture_status(self) -> Optional[CaptureStatus]:
+        if self._source is not None and self._source.capture is not None:
+            return self._source.capture.status
+        if self.broadcaster.capture is not None:
+            return self.broadcaster.capture.status
+        return None
+
+    def scan(self, timeout: float = 5.0) -> list[Device]:
         fut = asyncio.run_coroutine_threadsafe(self._scan(timeout), self._loop)
-        return fut.result(timeout + 10)
+        return fut.result(timeout + 20)
 
     def start(self, device: Device) -> None:
         self.device = device
         self.config.device_identifier = device.identifier
         self.config.device_name = device.name
         self.config.device_address = device.address
+        self.config.device_kind = device.kind
+        self.config.device_url = device.url
         self.config.save()
         asyncio.run_coroutine_threadsafe(self._start(device), self._loop).result(15)
 
@@ -120,16 +128,26 @@ class AirPlayStreamer:
         if self.device and self.is_active:
             self.start(self.device)
 
+    def saved_device(self) -> Optional[Device]:
+        """上次使用的接收端（供自動連線；AirPlay 仍需掃描確認在線）。"""
+        if not self.config.device_identifier:
+            return None
+        return Device(
+            name=self.config.device_name or "",
+            identifier=self.config.device_identifier,
+            address=self.config.device_address or "",
+            model="",
+            kind=self.config.device_kind or "airplay",
+            url=self.config.device_url or "",
+        )
+
     def set_volume(self, percent: int) -> None:
         self.config.volume = max(0, min(100, percent))
         self.config.save()
-        if self._atv is not None:
-            asyncio.run_coroutine_threadsafe(
-                self._set_volume(self.config.volume), self._loop
-            )
+        asyncio.run_coroutine_threadsafe(self._set_volume(self.config.volume), self._loop)
 
     def volume_step(self, delta: int) -> Optional[int]:
-        """音量 ±delta；以接收端目前音量為基準（若已連線）。"""
+        """音量 ±delta；以接收端目前音量為基準（若已連線且可讀）。"""
         current = self.config.volume
         if self._atv is not None:
             with suppress(Exception):
@@ -145,8 +163,10 @@ class AirPlayStreamer:
         device: Device,
         ask_pin: Callable[[str], Optional[str]],
         notify: Callable[[str], None],
-    ) -> Dict[str, bool]:
-        """與接收端配對（RAOP 與 AirPlay）。回傳各協定是否成功。會先停止串流，完成後恢復。"""
+    ) -> dict[str, bool]:
+        """與 AirPlay 接收端配對（RAOP 與 AirPlay）。回傳各協定是否成功。會先停止串流，完成後恢復。"""
+        if device.kind != "airplay":
+            raise RuntimeError("只有 AirPlay 接收端需要配對")
         fut = asyncio.run_coroutine_threadsafe(
             self._pair(device, ask_pin, notify), self._loop
         )
@@ -168,6 +188,18 @@ class AirPlayStreamer:
     def has_credentials(self, device: Device) -> bool:
         return bool(self.config.credentials.get(device.identifier))
 
+    def add_snapcast_server(self, spec: str) -> Device:
+        device = snapcast_sink.parse_server(spec)
+        if spec not in self.config.snapcast_servers:
+            self.config.snapcast_servers.append(spec)
+            self.config.save()
+        return device
+
+    def remove_snapcast_server(self, spec: str) -> None:
+        with suppress(ValueError):
+            self.config.snapcast_servers.remove(spec)
+        self.config.save()
+
     # ------------------------------------------------------------ 內部（事件迴圈執行緒）
     def _set_state(self, state: State, message: str = "") -> None:
         self.state = state
@@ -179,7 +211,25 @@ class AirPlayStreamer:
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("狀態回呼失敗")
 
-    async def _scan(self, timeout: float) -> List[Device]:
+    async def _scan(self, timeout: float) -> list[Device]:
+        async def guarded(name: str, coro: Awaitable[list[Device]]) -> list[Device]:
+            try:
+                return await asyncio.wait_for(coro, timeout + 10)
+            except Exception as exc:  # pylint: disable=broad-except
+                _LOGGER.warning("%s 掃描失敗：%s", name, exc)
+                return []
+
+        results = await asyncio.gather(
+            guarded("AirPlay", self._scan_airplay(timeout)),
+            guarded("Google Cast", cast_sink.discover(self._loop, timeout)),
+            guarded("DLNA", dlna_sink.discover(min(timeout, 4.0))),
+        )
+        devices = [d for group in results for d in group]
+        devices.extend(snapcast_sink.manual_devices(self.config.snapcast_servers))
+        devices.sort(key=lambda d: (d.kind, d.name))
+        return devices
+
+    async def _scan_airplay(self, timeout: float) -> list[Device]:
         confs = await pyatv.scan(self._loop, timeout=timeout)
         devices = []
         for conf in confs:
@@ -187,12 +237,11 @@ class AirPlayStreamer:
                 continue
             model = conf.device_info.raw_model or conf.device_info.model.name
             devices.append(
-                Device(conf.name, conf.identifier or "", str(conf.address), str(model))
+                Device(conf.name, conf.identifier or "", str(conf.address), str(model), kind="airplay")
             )
-        devices.sort(key=lambda d: d.name)
         return devices
 
-    async def _find(self, device: Device):
+    async def _find_airplay(self, device: Device):
         confs = []
         if device.address:
             with suppress(Exception):
@@ -221,10 +270,10 @@ class AirPlayStreamer:
         device: Device,
         ask_pin: Callable[[str], Optional[str]],
         notify: Callable[[str], None],
-    ) -> Dict[str, bool]:
+    ) -> dict[str, bool]:
         was_active = self.is_active
         await self._stop()
-        conf = await self._find(device)
+        conf = await self._find_airplay(device)
         if conf is None:
             raise RuntimeError(f"在網路上找不到 {device.name}")
 
@@ -232,7 +281,7 @@ class AirPlayStreamer:
             return await self._loop.run_in_executor(None, ask_pin, prompt)
 
         saved = dict(self.config.credentials.get(device.identifier, {}))
-        results: Dict[str, bool] = {}
+        results: dict[str, bool] = {}
         for protocol in (Protocol.RAOP, Protocol.AirPlay):
             if conf.get_service(protocol) is None:
                 continue
@@ -254,10 +303,11 @@ class AirPlayStreamer:
         return results
 
     async def _set_volume(self, percent: int) -> None:
-        if self._atv is None:
-            return
         try:
-            await self._atv.audio.set_volume(float(percent))
+            if self._atv is not None:
+                await self._atv.audio.set_volume(float(percent))
+            elif self._sink_set_volume is not None:
+                await self._loop.run_in_executor(None, self._sink_set_volume, percent)
         except Exception as exc:  # pylint: disable=broad-except
             _LOGGER.warning("設定音量失敗：%s", exc)
 
@@ -268,41 +318,31 @@ class AirPlayStreamer:
             album=APP_NAME,
         )
 
+    def _set_sink_volume_slot(self, fn: Optional[Callable[[int], None]]) -> None:
+        self._sink_set_volume = fn
+
+    # ------------------------------------------------------------ 串流主迴圈
     async def _run(self, device: Device) -> None:
         attempt = 0
         while True:
-            atv = None
             try:
                 self._set_state(
                     State.CONNECTING if attempt == 0 else State.RECONNECTING,
                     f"連線到 {device.name}",
                 )
-                conf = await self._find(device)
-                if conf is None:
-                    raise RuntimeError(f"在網路上找不到 {device.name}")
-                pairing.apply_credentials(
-                    conf, self.config.credentials.get(device.identifier, {})
-                )
-
-                patches.set_latency_ms(self.config.receiver_latency_ms)
-                atv = await pyatv.connect(conf, self._loop, protocol=Protocol.RAOP)
-                self._atv = atv
-
-                self._source = LiveAudioSource(
-                    jitter_ms=self.config.jitter_buffer_ms,
-                    capture_device_index=self.config.capture_device_index,
-                    quality=self.config.resample_quality,
-                    dither=self.config.dither,
-                    drift_compensation=self.config.drift_compensation,
-                    metadata=self._metadata(),
-                    on_first_read=lambda: self._set_state(State.STREAMING, device.name),
-                )
-                if self.config.volume is not None:
-                    with suppress(Exception):
-                        await atv.audio.set_volume(float(self.config.volume))
-
+                if device.kind == "airplay":
+                    await self._run_airplay(device)
+                elif device.kind in HTTP_PULL_KINDS:
+                    await self._run_http_pull(device)
+                elif device.kind == "snapcast":
+                    await snapcast_sink.run(
+                        device,
+                        self.broadcaster,
+                        lambda: self._set_state(State.STREAMING, device.name),
+                    )
+                else:
+                    raise RuntimeError(f"不支援的接收端種類：{device.kind}")
                 attempt = 0
-                await atv.stream.stream_file(self._source, metadata=self._metadata())
                 # 正常回傳代表接收端結束了串流（例如被其他來源接管）
                 self._set_state(State.RECONNECTING, "串流被接收端結束，重新連線")
             except asyncio.CancelledError:
@@ -311,22 +351,69 @@ class AirPlayStreamer:
                 attempt += 1
                 _LOGGER.warning("串流失敗：%s", exc, exc_info=_LOGGER.isEnabledFor(logging.DEBUG))
                 wait = min(2 * attempt, 15)
-                message = str(exc)
-                lowered = message.lower()
-                if "authentication" in lowered or "password" in lowered or "pair" in lowered:
-                    message += "；此接收端需要配對或密碼，請在選單「配對與密碼」設定"
-                elif "no response" in lowered or "timeout" in lowered:
-                    present = await self._loop.run_in_executor(None, firewall.rules_present)
-                    if not present:
-                        message += "；可能被 Windows 防火牆攔截，請在選單選「允許通過 Windows 防火牆」"
+                message = await self._explain_error(device, str(exc))
                 self._set_state(State.RECONNECTING, f"{message}（{wait} 秒後重試）")
                 await asyncio.sleep(wait)
                 continue
-            finally:
-                if self._source is not None:
-                    self._source.stop()
-                    self._source = None
-                if atv is not None:
-                    atv.close()
-                self._atv = None
             await asyncio.sleep(1.0)
+
+    async def _explain_error(self, device: Device, message: str) -> str:
+        lowered = message.lower()
+        if device.kind == "airplay" and (
+            "authentication" in lowered or "password" in lowered or "pair" in lowered
+        ):
+            return message + "；此接收端需要配對或密碼，請在選單「配對與密碼」設定"
+        if "no response" in lowered or "timeout" in lowered or "timed out" in lowered:
+            present = await self._loop.run_in_executor(None, firewall.rules_present)
+            if not present:
+                return message + "；可能被 Windows 防火牆攔截，請在選單選「允許通過 Windows 防火牆」"
+        return message
+
+    async def _run_airplay(self, device: Device) -> None:
+        conf = await self._find_airplay(device)
+        if conf is None:
+            raise RuntimeError(f"在網路上找不到 {device.name}")
+        pairing.apply_credentials(conf, self.config.credentials.get(device.identifier, {}))
+
+        patches.set_latency_ms(self.config.receiver_latency_ms)
+        atv = await pyatv.connect(conf, self._loop, protocol=Protocol.RAOP)
+        self._atv = atv
+        try:
+            self._source = LiveAudioSource(
+                jitter_ms=self.config.jitter_buffer_ms,
+                capture_device_index=self.config.capture_device_index,
+                quality=self.config.resample_quality,
+                dither=self.config.dither,
+                drift_compensation=self.config.drift_compensation,
+                metadata=self._metadata(),
+                on_first_read=lambda: self._set_state(State.STREAMING, device.name),
+            )
+            if self.config.volume is not None:
+                with suppress(Exception):
+                    await atv.audio.set_volume(float(self.config.volume))
+            await atv.stream.stream_file(self._source, metadata=self._metadata())
+        finally:
+            if self._source is not None:
+                self._source.stop()
+                self._source = None
+            atv.close()
+            self._atv = None
+
+    async def _run_http_pull(self, device: Device) -> None:
+        await self.http.start()
+        url = self.http.url_for(device.address)
+        on_streaming = lambda: self._set_state(  # noqa: E731
+            State.STREAMING, f"{device.name}（HTTP 拉流，延遲由接收端緩衝決定）"
+        )
+        if device.kind == "cast":
+            await cast_sink.run(
+                self._loop, device, url, self.config.volume, on_streaming, self._set_sink_volume_slot
+            )
+        else:
+            await dlna_sink.run(
+                device, url, self.config.volume, on_streaming, self._set_sink_volume_slot, self._loop
+            )
+
+
+# 向後相容的別名
+AirPlayStreamer = Streamer

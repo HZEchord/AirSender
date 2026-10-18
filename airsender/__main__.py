@@ -24,6 +24,7 @@ def _parse_args(argv):
     parser.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
     parser.add_argument("--list", action="store_true", help="列出 AirPlay 接收端後結束")
     parser.add_argument("--device", help="接收端名稱（部分比對）或 IP")
+    parser.add_argument("--snapcast", metavar="HOST[:PORT]", help="直接推送到 snapserver 的 tcp 來源（預設 port 4953）")
     parser.add_argument("--headless", action="store_true", help="不顯示系統匣，直接串流")
     parser.add_argument("--latency", type=int, help="接收端緩衝毫秒數（例如 250、500、1500）")
     parser.add_argument("--jitter", type=int, help="本機抖動緩衝毫秒數（預設 40）")
@@ -67,23 +68,30 @@ def main(argv=None) -> int:
         run_tray()
         return 0
 
-    from .streamer import AirPlayStreamer, State
+    from .sinks import KIND_LABELS
+    from .sinks.snapcast import parse_server
+    from .streamer import State, Streamer
 
-    streamer = AirPlayStreamer(config, lambda s, m: print(f"[{s.value}] {m}"))
+    streamer = Streamer(config, lambda s, m: print(f"[{s.value}] {m}"))
     streamer.start_loop()
     try:
-        print("掃描 AirPlay 接收端…")
-        devices = streamer.scan(timeout=5.0)
+        if args.snapcast and not args.list:
+            devices = [parse_server(args.snapcast)]
+        else:
+            print("掃描接收端（AirPlay / Google Cast / DLNA）…")
+            devices = streamer.scan(timeout=5.0)
         if not devices:
-            print("找不到任何支援 AirPlay 音訊的接收端。")
+            print("找不到任何接收端。")
             return 1
         for d in devices:
-            print(f"  - {d.label}")
+            print(f"  - [{KIND_LABELS.get(d.kind, d.kind)}] {d.label}")
         if args.list:
             return 0
 
         target = None
-        if args.device:
+        if args.snapcast:
+            target = devices[0]
+        elif args.device:
             key = args.device.lower()
             target = next(
                 (d for d in devices if key in d.name.lower() or key == d.address), None
