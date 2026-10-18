@@ -31,7 +31,6 @@ from airsender.config import Config  # noqa: E402
 from airsender.logging_setup import setup_logging  # noqa: E402
 from airsender.streamer import AirPlayStreamer, State  # noqa: E402
 
-
 CHIRP_F0 = 1000.0
 CHIRP_F1 = 6000.0
 

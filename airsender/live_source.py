@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
+from typing import Optional
 
 from pyatv.exceptions import NotSupportedError
 from pyatv.interface import MediaMetadata

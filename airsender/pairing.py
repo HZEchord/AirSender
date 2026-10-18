@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import Awaitable, Callable, Dict, Optional
+from collections.abc import Awaitable, Callable
+from typing import Optional
 
 import pyatv
 from pyatv.const import Protocol
@@ -21,7 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 PinProvider = Callable[[str], Awaitable[Optional[str]]]
 Notifier = Callable[[str], None]
 
-PROTOCOL_KEYS: Dict[Protocol, str] = {Protocol.RAOP: "raop", Protocol.AirPlay: "airplay"}
+PROTOCOL_KEYS: dict[Protocol, str] = {Protocol.RAOP: "raop", Protocol.AirPlay: "airplay"}
 
 
 async def pair_protocol(
@@ -56,7 +57,7 @@ async def pair_protocol(
         await pairing.close()
 
 
-def apply_credentials(conf: BaseConfig, saved: Dict[str, str]) -> None:
+def apply_credentials(conf: BaseConfig, saved: dict[str, str]) -> None:
     """把儲存的憑證 / 密碼填回設定物件（連線前呼叫）。"""
     for protocol, key in PROTOCOL_KEYS.items():
         creds = saved.get(key)

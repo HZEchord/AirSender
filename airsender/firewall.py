@@ -11,7 +11,6 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
 
 from . import APP_NAME
 
@@ -19,7 +18,7 @@ _LOGGER = logging.getLogger(__name__)
 RULE_NAME = APP_NAME
 
 
-def programs() -> List[str]:
+def programs() -> list[str]:
     """需要放行的執行檔。"""
     exe = Path(sys.executable)
     if getattr(sys, "frozen", False):
