@@ -25,7 +25,8 @@ a = Analysis(
     hiddenimports=hidden,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "scipy", "pandas", "IPython", "pytest"],
+    # tkinter 用於 PIN / 密碼輸入對話框，需保留
+    excludes=["matplotlib", "scipy", "pandas", "IPython", "pytest"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

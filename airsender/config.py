@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 from . import APP_NAME
 
@@ -61,6 +61,8 @@ class Config:
     device_identifier: Optional[str] = None
     device_name: Optional[str] = None
     device_address: Optional[str] = None
+    # 各接收端的配對憑證與密碼：{identifier: {"raop": ..., "airplay": ..., "password": ...}}
+    credentials: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
     # 延遲相關
     receiver_latency_ms: int = 500  # 接收端緩衝

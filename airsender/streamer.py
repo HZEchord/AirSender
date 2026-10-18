@@ -12,13 +12,13 @@ import threading
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import pyatv
 from pyatv.const import Protocol
 from pyatv.interface import MediaMetadata
 
-from . import APP_NAME, firewall, patches
+from . import APP_NAME, firewall, pairing, patches
 from .config import Config
 from .live_source import LiveAudioSource
 
@@ -65,6 +65,8 @@ class AirPlayStreamer:
     def __init__(self, config: Config, on_state: Optional[StateCallback] = None) -> None:
         self.config = config
         self._on_state = on_state
+        # 曾測試 SelectorEventLoop（UDP 直接 sendto）與 Windows 預設 Proactor 的差異，
+        # 在 125 封包/秒下 CPU 差異落在量測雜訊內（約 4–5% 單核心），故維持預設迴圈。
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._loop.run_forever, name="airplay-loop", daemon=True
@@ -122,7 +124,49 @@ class AirPlayStreamer:
         self.config.volume = max(0, min(100, percent))
         self.config.save()
         if self._atv is not None:
-            asyncio.run_coroutine_threadsafe(self._set_volume(percent), self._loop)
+            asyncio.run_coroutine_threadsafe(
+                self._set_volume(self.config.volume), self._loop
+            )
+
+    def volume_step(self, delta: int) -> Optional[int]:
+        """音量 ±delta；以接收端目前音量為基準（若已連線）。"""
+        current = self.config.volume
+        if self._atv is not None:
+            with suppress(Exception):
+                current = int(round(self._atv.audio.volume))
+        if current is None:
+            current = 50
+        new = max(0, min(100, current + delta))
+        self.set_volume(new)
+        return new
+
+    def pair(
+        self,
+        device: Device,
+        ask_pin: Callable[[str], Optional[str]],
+        notify: Callable[[str], None],
+    ) -> Dict[str, bool]:
+        """與接收端配對（RAOP 與 AirPlay）。回傳各協定是否成功。會先停止串流，完成後恢復。"""
+        fut = asyncio.run_coroutine_threadsafe(
+            self._pair(device, ask_pin, notify), self._loop
+        )
+        return fut.result(600)
+
+    def set_password(self, device: Device, password: Optional[str]) -> None:
+        saved = self.config.credentials.setdefault(device.identifier, {})
+        if password:
+            saved["password"] = password
+        else:
+            saved.pop("password", None)
+        self.config.save()
+        self.restart()
+
+    def forget_credentials(self, device: Device) -> None:
+        self.config.credentials.pop(device.identifier, None)
+        self.config.save()
+
+    def has_credentials(self, device: Device) -> bool:
+        return bool(self.config.credentials.get(device.identifier))
 
     # ------------------------------------------------------------ 內部（事件迴圈執行緒）
     def _set_state(self, state: State, message: str = "") -> None:
@@ -172,6 +216,43 @@ class AirPlayStreamer:
                 await task
         self._set_state(State.IDLE)
 
+    async def _pair(
+        self,
+        device: Device,
+        ask_pin: Callable[[str], Optional[str]],
+        notify: Callable[[str], None],
+    ) -> Dict[str, bool]:
+        was_active = self.is_active
+        await self._stop()
+        conf = await self._find(device)
+        if conf is None:
+            raise RuntimeError(f"在網路上找不到 {device.name}")
+
+        async def ask(prompt: str) -> Optional[str]:
+            return await self._loop.run_in_executor(None, ask_pin, prompt)
+
+        saved = dict(self.config.credentials.get(device.identifier, {}))
+        results: Dict[str, bool] = {}
+        for protocol in (Protocol.RAOP, Protocol.AirPlay):
+            if conf.get_service(protocol) is None:
+                continue
+            key = pairing.PROTOCOL_KEYS[protocol]
+            try:
+                creds = await pairing.pair_protocol(self._loop, conf, protocol, ask, notify)
+            except Exception as exc:  # pylint: disable=broad-except
+                _LOGGER.warning("%s 配對失敗：%s", protocol.name, exc)
+                notify(f"{protocol.name} 配對失敗：{exc}")
+                results[key] = False
+                continue
+            if creds:
+                saved[key] = creds
+            results[key] = bool(creds)
+        self.config.credentials[device.identifier] = saved
+        self.config.save()
+        if was_active:
+            self._task = self._loop.create_task(self._run(device))
+        return results
+
     async def _set_volume(self, percent: int) -> None:
         if self._atv is None:
             return
@@ -199,6 +280,9 @@ class AirPlayStreamer:
                 conf = await self._find(device)
                 if conf is None:
                     raise RuntimeError(f"在網路上找不到 {device.name}")
+                pairing.apply_credentials(
+                    conf, self.config.credentials.get(device.identifier, {})
+                )
 
                 patches.set_latency_ms(self.config.receiver_latency_ms)
                 atv = await pyatv.connect(conf, self._loop, protocol=Protocol.RAOP)
@@ -228,7 +312,10 @@ class AirPlayStreamer:
                 _LOGGER.warning("串流失敗：%s", exc, exc_info=_LOGGER.isEnabledFor(logging.DEBUG))
                 wait = min(2 * attempt, 15)
                 message = str(exc)
-                if "no response" in message.lower() or "timeout" in message.lower():
+                lowered = message.lower()
+                if "authentication" in lowered or "password" in lowered or "pair" in lowered:
+                    message += "；此接收端需要配對或密碼，請在選單「配對與密碼」設定"
+                elif "no response" in lowered or "timeout" in lowered:
                     present = await self._loop.run_in_executor(None, firewall.rules_present)
                     if not present:
                         message += "；可能被 Windows 防火牆攔截，請在選單選「允許通過 Windows 防火牆」"

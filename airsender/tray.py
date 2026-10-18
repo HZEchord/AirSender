@@ -14,7 +14,7 @@ import pystray
 from PIL import Image, ImageDraw
 from pystray import Menu, MenuItem
 
-from . import APP_NAME, __version__, autostart, firewall
+from . import APP_NAME, __version__, autostart, dialogs, firewall
 from .capture import list_loopback_devices
 from .config import DRIFT_MODES, LATENCY_PRESETS, RESAMPLE_QUALITIES, Config, log_dir
 from .streamer import AirPlayStreamer, Device, State
@@ -227,6 +227,76 @@ class TrayApp:
         else:
             self.streamer.set_volume(percent)
 
+    def _reconnect(self) -> None:
+        device = self._current_device()
+        if device is None:
+            self._notify("請先在「接收端」選擇裝置")
+            return
+        self._select_device(device)
+
+    def _volume_step(self, delta: int) -> None:
+        def worker() -> None:
+            new = self.streamer.volume_step(delta)
+            if new is not None:
+                self.icon.title = f"{APP_NAME}：音量 {new}%"
+                self._update_menu()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _pair_current(self) -> None:
+        device = self._current_device()
+        if device is None:
+            self._notify("請先在「接收端」選擇裝置")
+            return
+
+        def worker() -> None:
+            try:
+                self._notify(f"開始與 {device.name} 配對…")
+                results = self.streamer.pair(device, dialogs.ask_string, self._notify)
+                ok = [k.upper() for k, v in results.items() if v]
+                failed = [k.upper() for k, v in results.items() if not v]
+                summary = []
+                if ok:
+                    summary.append(f"成功：{', '.join(ok)}")
+                if failed:
+                    summary.append(f"失敗：{', '.join(failed)}")
+                dialogs.show_info(
+                    f"{device.name} 配對結果\n" + ("\n".join(summary) or "沒有可配對的協定")
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                _LOGGER.warning("配對失敗：%s", exc)
+                dialogs.show_info(f"配對失敗：{exc}")
+            finally:
+                self._update_menu()
+
+        threading.Thread(target=worker, name="pair", daemon=True).start()
+
+    def _set_password_current(self) -> None:
+        device = self._current_device()
+        if device is None:
+            self._notify("請先在「接收端」選擇裝置")
+            return
+
+        def worker() -> None:
+            password = dialogs.ask_string(
+                f"請輸入 {device.name} 的 AirPlay 密碼（留空以清除）", secret=True
+            )
+            if password is None:
+                return
+            self.streamer.set_password(device, password or None)
+            self._notify("已更新密碼" if password else "已清除密碼")
+            self._update_menu()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _forget_current(self) -> None:
+        device = self._current_device()
+        if device is None:
+            return
+        self.streamer.forget_credentials(device)
+        self._notify(f"已清除 {device.name} 的配對與密碼")
+        self._update_menu()
+
     def _toggle_autostart_stream(self) -> None:
         self.config.autostart_stream = not self.config.autostart_stream
         self.config.save()
@@ -355,6 +425,21 @@ class TrayApp:
                 radio=True,
             )
 
+    def _pairing_items(self):
+        device = self._current_device()
+        name = device.name if device else "（尚未選擇接收端）"
+        has = bool(device and self.streamer.has_credentials(device))
+        yield MenuItem(f"目前接收端：{name}", None, enabled=False)
+        yield MenuItem(
+            f"配對…{'（已配對）' if has else ''}",
+            _call(self._pair_current),
+            enabled=device is not None,
+        )
+        yield MenuItem("設定接收端密碼…", _call(self._set_password_current), enabled=device is not None)
+        yield MenuItem("忘記配對與密碼", _call(self._forget_current), enabled=has)
+        yield Menu.SEPARATOR
+        yield MenuItem("HomePod 不需要配對；Apple TV 開啟「需要裝置驗證」或第三方接收端設了密碼時才需要", None, enabled=False)
+
     def _menu_items(self):
         yield MenuItem(lambda item: self._status_text(), None, enabled=False)
         yield Menu.SEPARATOR
@@ -363,8 +448,25 @@ class TrayApp:
             lambda icon, item: self._toggle_stream(),
             default=True,
         )
+        yield MenuItem(
+            "重新連線",
+            _call(self._reconnect),
+            enabled=lambda item: self._current_device() is not None,
+        )
+        yield MenuItem(
+            "音量 +5",
+            _call(self._volume_step, 5),
+            enabled=lambda item: self.streamer.is_active,
+        )
+        yield MenuItem(
+            "音量 -5",
+            _call(self._volume_step, -5),
+            enabled=lambda item: self.streamer.is_active,
+        )
+        yield Menu.SEPARATOR
         yield MenuItem("接收端", Menu(self._device_items))
         yield MenuItem("接收端音量", Menu(self._volume_items))
+        yield MenuItem("配對與密碼", Menu(self._pairing_items))
         yield Menu.SEPARATOR
         yield MenuItem("延遲", Menu(self._latency_items))
         yield MenuItem("音質", Menu(self._quality_items))
