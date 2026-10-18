@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
@@ -32,6 +33,7 @@ class CaptureStatus:
     running: bool = False
     errors: int = 0
     last_error: str = ""
+    overflows: int = 0
     frames_captured: int = field(default=0)
 
 
@@ -128,9 +130,9 @@ class WasapiLoopbackCapture:
             probe.terminate()
 
     def _watch_default_device(self, current_name: str, changed: threading.Event) -> None:
-        """獨立執行緒：每 5 秒檢查一次預設輸出裝置是否變更（PyAudio 初始化要數十毫秒，
+        """獨立執行緒：每 10 秒檢查一次預設輸出裝置是否變更（PyAudio 初始化要數十毫秒，
         不能在擷取執行緒上做，否則會造成 underrun）。"""
-        while not self._stop.wait(5.0) and not changed.is_set():
+        while not self._stop.wait(10.0) and not changed.is_set():
             if self._default_changed(current_name):
                 changed.set()
 
@@ -156,6 +158,18 @@ class WasapiLoopbackCapture:
                 except ValueError:
                     fmt = pa.paInt16
 
+                # callback 模式：PortAudio 自己的執行緒把每個區塊丟進佇列，這裡的工作執行緒
+                # 以 timeout 等待。好處：stop() 永遠能在 0.25 s 內返回並確實關閉 WASAPI
+                # 串流（阻塞式 read() 在沒有程式播音時會卡住，導致裝置無法釋放）。
+                chunks: "queue.SimpleQueue[bytes]" = queue.SimpleQueue()
+                status = self.status
+
+                def on_audio(in_data, _frame_count, _time_info, flags):
+                    if flags & pa.paInputOverflow:
+                        status.overflows += 1
+                    chunks.put(in_data)
+                    return (None, pa.paContinue)
+
                 stream = p.open(
                     format=fmt,
                     channels=channels,
@@ -163,24 +177,30 @@ class WasapiLoopbackCapture:
                     input=True,
                     input_device_index=index,
                     frames_per_buffer=block,
+                    stream_callback=on_audio,
                 )
 
+                # 兩段式重取樣：
+                # 1) 固定比率（VHQ）把裝置取樣率降到目標取樣率；取樣率相同時略過
+                # 2) 可變速率段在目標取樣率上做 ±0.1% 的微調（漂移補償）
+                # 可變速率引擎（vr32）在 176.4 kHz 輸入端直接跑比固定比率多耗約 3% 單核心，
+                # 先降到 44.1 kHz 再微調，成本降到原本的 1/4 且固定段保有 VHQ 品質。
                 resampler = None
-                if self.variable_rate:
-                    # 建構時的比率必須是之後會用到的最大值
+                if rate != self.target_rate:
                     resampler = soxr.ResampleStream(
-                        rate * (1 + MAX_RATE_ADJUST),
+                        rate, self.target_rate, 2, dtype="float32", quality=self.quality
+                    )
+                drift_stage = None
+                if self.variable_rate:
+                    drift_stage = soxr.ResampleStream(
+                        self.target_rate * (1 + MAX_RATE_ADJUST),
                         self.target_rate,
                         2,
                         dtype="float32",
                         quality=self.quality,
                         vr=True,
                     )
-                    resampler.set_io_ratio(rate, self.target_rate, 0)
-                elif rate != self.target_rate:
-                    resampler = soxr.ResampleStream(
-                        rate, self.target_rate, 2, dtype="float32", quality=self.quality
-                    )
+                    drift_stage.set_io_ratio(self.target_rate, self.target_rate, 0)
 
                 self.status.device_name = str(info["name"]).replace(" [Loopback]", "")
                 self.status.source_rate = rate
@@ -194,9 +214,8 @@ class WasapiLoopbackCapture:
                     channels,
                     self.status.source_format,
                     self.target_rate,
-                    "，soxr 可變速率（漂移補償）"
-                    if self.variable_rate
-                    else (f"，soxr {self.quality}" if resampler else "，不需重取樣"),
+                    (f"，soxr {self.quality}" if resampler else "，不需重取樣")
+                    + ("，可變速率漂移補償" if drift_stage else ""),
                 )
 
                 device_changed = threading.Event()
@@ -209,8 +228,17 @@ class WasapiLoopbackCapture:
                     ).start()
 
                 while not self._stop.is_set():
-                    raw = stream.read(block, exception_on_overflow=False)
-                    self._process(raw, fmt, channels, resampler, rate)
+                    try:
+                        raw = chunks.get(timeout=0.25)
+                    except queue.Empty:
+                        # 沒有程式在播音時 loopback 不會送資料，這是正常的；
+                        # 但若串流本身停了（裝置被拔除），就重新開啟。
+                        if not stream.is_active():
+                            raise RuntimeError("擷取串流已停止（裝置被移除或變更？）")
+                        if device_changed.is_set():
+                            break
+                        continue
+                    self._process(raw, fmt, channels, resampler, drift_stage)
                     if device_changed.is_set():
                         _LOGGER.info("Windows 預設輸出裝置已變更，重新開啟擷取")
                         break
@@ -229,13 +257,12 @@ class WasapiLoopbackCapture:
                         pass
                 p.terminate()
 
-    def _process(
-        self, raw: bytes, fmt: int, channels: int, resampler, rate: int
-    ) -> None:
+    def _process(self, raw: bytes, fmt: int, channels: int, resampler, drift_stage) -> None:
         if fmt == pa.paFloat32:
             x = np.frombuffer(raw, dtype=np.float32)
         else:
-            x = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            x = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+            x *= 1.0 / 32768.0
         if x.size == 0:
             return
         x = x.reshape(-1, channels)
@@ -246,20 +273,31 @@ class WasapiLoopbackCapture:
         x = np.ascontiguousarray(x, dtype=np.float32)
 
         if resampler is not None:
-            if self.variable_rate and self.rate_adjust is not None:
-                adj = max(-MAX_RATE_ADJUST, min(MAX_RATE_ADJUST, self.rate_adjust()))
-                resampler.set_io_ratio(rate * (1.0 + adj), self.target_rate, x.shape[0])
             x = resampler.resample_chunk(x)
             if x.size == 0:
                 return
 
-        if self.dither:
-            # TPDF dither：兩個均勻分布相減，幅度 ±1 LSB
-            noise = self._rng.random(x.shape, dtype=np.float32) - self._rng.random(
-                x.shape, dtype=np.float32
+        if drift_stage is not None:
+            adj = 0.0
+            if self.rate_adjust is not None:
+                adj = max(-MAX_RATE_ADJUST, min(MAX_RATE_ADJUST, self.rate_adjust()))
+            drift_stage.set_io_ratio(
+                self.target_rate * (1.0 + adj), self.target_rate, x.shape[0]
             )
-            x = x + noise * (1.0 / 32768.0)
+            x = drift_stage.resample_chunk(x)
+            if x.size == 0:
+                return
 
-        pcm = np.clip(np.rint(x * 32767.0), -32768, 32767).astype("<i2")
+        # 以下全為就地運算，避免每個區塊多次配置暫存陣列
+        x = x if x.flags.writeable and x.base is None else x.copy()
+        x *= 32767.0
+        if self.dither:
+            # TPDF dither：兩個均勻分布相減（三角分布），幅度 ±1 LSB
+            noise = self._rng.random(x.shape, dtype=np.float32)
+            noise -= self._rng.random(x.shape, dtype=np.float32)
+            x += noise
+        np.rint(x, out=x)
+        np.clip(x, -32768.0, 32767.0, out=x)
+        pcm = x.astype("<i2")
         self.status.frames_captured += pcm.shape[0]
         self.sink(pcm.tobytes())
