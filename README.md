@@ -1,6 +1,14 @@
 # AirSender
 
-把 Windows 正在播放的所有聲音，以**未壓縮 PCM** 透過 AirPlay 送到 **HomePod / HomePod mini**（也支援 Apple TV 與其他支援 AirPlay 音訊的接收端）。以低延遲、不壓縮、最高音質為目標。
+把 Windows 正在播放的所有聲音，以**未壓縮 PCM** 透過 AirPlay 送到 **HomePod / HomePod mini**（也支援 Apple TV 與其他支援 AirPlay 音訊的接收端），並可輸出到 **Google Cast、DLNA / UPnP、Snapcast** 接收端。以低延遲、不壓縮、最高音質為目標。
+
+| 接收端種類 | 路徑 | 延遲 | 驗證狀態 |
+| --- | --- | --- | --- |
+| AirPlay（HomePod、Apple TV、Sonos / Yamaha / Denon 等 AirPlay 2 機種、shairport-sync） | pyatv 推送 raw PCM | **約 0.5 秒**（實測 HomePod mini 520–550 ms） | 已實測 HomePod mini |
+| Google Cast（Chromecast、Nest 音響、Cast 電視） | 接收端拉 HTTP WAV | 2–4 秒（接收端預緩衝） | 已實作；本機只有一台待機中的 Cast 機上盒，無法完整驗證 |
+| DLNA / UPnP MediaRenderer | 接收端拉 HTTP WAV | 1–5 秒 | 已實作；本機無 DLNA 裝置可驗證 |
+| Snapcast（snapserver tcp 來源） | TCP 推 raw PCM | 由 snapserver buffer 決定（300–1000 ms） | 已以本機假伺服器驗證資料速率 |
+| 任何播放器（VLC、foobar2000、手機 App…） | 開 `http://<電腦IP>:8765/stream.wav` | 播放器緩衝決定 | 已驗證 |
 
 - 擷取：WASAPI loopback，直接抓 Windows 混音輸出（float32，裝置原生取樣率）
 - 重取樣：libsoxr（固定比率 VHQ，或可變速率模式做時鐘漂移補償），TPDF dither 轉 16-bit
@@ -103,6 +111,22 @@ AirSenderCLI.exe --device 客廳 --headless --latency 250
 實測結果（HomePod mini，Wi-Fi，接收端緩衝 250 ms，本機抖動緩衝 40 ms）：中位數 548 ms，6 次介於 542–549 ms。
 若電腦接有喇叭，會先看到一個較早的峰值（電腦喇叭），HomePod 的峰值在 100 ms 之後。
 
+## 非 AirPlay 接收端
+
+- **Google Cast / DLNA**：系統匣「接收端」會列出掃到的裝置；選擇後 AirSender 啟動 HTTP 伺服器（預設 port 8765，可在設定檔改 `http_port`）並要接收端來拉 `stream.wav`。這條路徑無損但延遲由接收端預緩衝決定，系統匣會標示。延遲選單對這些裝置無效。
+- **Snapcast**：「接收端 → 新增 Snapcast 伺服器…」輸入 snapserver 位址。snapserver.conf 需有：
+
+  ```
+  [stream]
+  source = tcp://0.0.0.0:4953?name=AirSender&mode=server&sampleformat=44100:16:2
+  ```
+
+  命令列可直接 `AirSenderCLI.exe --headless --snapcast 192.168.1.10`。
+- **任何播放器**：串流開始後（或選了任一 Cast / DLNA 裝置），在同網路的播放器開 `http://<電腦IP>:8765/stream.wav`（WAV）或 `/stream.pcm`（raw s16le 44.1 kHz 立體聲）即可。
+- 防火牆：Cast / DLNA 的探索依賴 mDNS / SSDP **多播回應**（入站 UDP），播放時接收端還要連入 TCP 8765；
+  兩者都需要安裝程式加入的防火牆規則（放行整個程式）。沒有規則時，打包版會掃不到 Cast / DLNA 裝置，
+  但 AirPlay 不受影響（pyatv 的 mDNS 要求單播回應）。
+
 ## 行為細節
 
 - **Windows 沒有任何程式在播音時**，WASAPI loopback 不會送出資料，AirSender 會送靜音維持連線。播放恢復時會先重新累積到抖動緩衝量再開始送（期間仍是靜音），確保延遲與穩定度與剛開始串流時一致。
@@ -138,11 +162,32 @@ Windows 混音 ──WASAPI loopback──▶ capture.py（soxr 重取樣 + dith
 - `airsender/capture.py`：WASAPI loopback 執行緒、重取樣、dither
 - `airsender/live_source.py`：pyatv `AudioSource` 實作、抖動緩衝、`DriftController`
 - `airsender/patches.py`：對 pyatv 的兩個補丁（接受即時來源；接收端延遲可設定，pyatv 原本寫死 1.5 秒）
-- `airsender/streamer.py`：掃描、連線、串流、自動重連（獨立 asyncio 執行緒）
+- `airsender/streamer.py`：掃描、連線、串流、自動重連（獨立 asyncio 執行緒），依接收端種類分派
+- `airsender/httpstream.py`：PCM 廣播器 + aiohttp WAV 伺服器（Cast / DLNA / 播放器共用）
+- `airsender/sinks/`：`cast.py`（pychromecast）、`dlna.py`（async_upnp_client）、`snapcast.py`（TCP）
+- `airsender/pairing.py`、`airsender/dialogs.py`：AirPlay 配對 / 密碼與輸入對話框
 - `airsender/tray.py`：pystray 系統匣
 - `airsender/__main__.py`：命令列入口
 - `tools/measure_latency.py`：端對端延遲量測（麥克風）
 - `AirSender.spec`、`installer/AirSender.iss`、`build.ps1`：打包與安裝程式
+
+## 開發
+
+```bash
+.venv\Scripts\python -m ruff check airsender tools tests
+```
+
+```bash
+.venv\Scripts\python -m unittest discover -s tests -v
+```
+
+效能參考（本機 i7 等級、176.4 kHz DAC、串流到 HomePod）：擷取 + 兩段式重取樣 + dither 約 3.2% 單核心，
+pyatv 傳送路徑約 4–5% 單核心，合計約 7% 單核心（16 執行緒機器約 0.5% 整體）。
+
+## 授權
+
+MIT（見 `LICENSE`）。第三方元件授權見 `THIRD_PARTY_NOTICES.md`；其中 libsoxr、pystray、python-zeroconf 為 LGPL，
+以獨立 `.pyd` / `.dll` 動態載入散佈，商業散佈時請保留聲明並勿改為 onefile 加密打包。
 
 ## 致謝
 
@@ -150,3 +195,5 @@ Windows 混音 ──WASAPI loopback──▶ capture.py（soxr 重取樣 + dith
 - [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch)：WASAPI loopback
 - [python-soxr](https://github.com/dofuuz/python-soxr)：libsoxr 重取樣
 - [pystray](https://github.com/moses-palmer/pystray)：系統匣
+- [PyChromecast](https://github.com/home-assistant-libs/pychromecast)、[async_upnp_client](https://github.com/StevenLooman/async_upnp_client)、[aiohttp](https://github.com/aio-libs/aiohttp)：Cast / DLNA / HTTP 串流
+- [swyh-rs](https://github.com/dheijl/swyh-rs)：HTTP 即時 WAV 串流設計的參考
