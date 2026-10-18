@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airsender"
+version = "0.1.0"
+description = "把 Windows 系統音訊以未壓縮 PCM 透過 AirPlay 送到 HomePod / AirPlay 接收端"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pyatv==0.18.0",
+    "PyAudioWPatch>=0.2.12.7",
+    "soxr>=1.0",
+    "numpy>=2.0",
+    "pystray>=0.19.5",
+    "pillow>=10.0",
+]
+
+[project.scripts]
+airsender = "airsender.__main__:main"
+
+[project.gui-scripts]
+airsender-tray = "airsender.__main__:main"
+
+[tool.setuptools]
+packages = ["airsender"]

@@ -1,0 +1,6 @@
+pyatv==0.18.0
+PyAudioWPatch>=0.2.12.7
+soxr>=1.0
+numpy>=2.0
+pystray>=0.19.5
+pillow>=10.0
