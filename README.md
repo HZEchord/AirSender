@@ -4,7 +4,7 @@
 
 - 擷取：WASAPI loopback，直接抓 Windows 混音輸出（float32，裝置原生取樣率）
 - 重取樣：libsoxr（固定比率 VHQ，或可變速率模式做時鐘漂移補償），TPDF dither 轉 16-bit
-- 傳輸：AirPlay 2（HAP 加密通道）+ RAOP，音訊格式為 **44.1 kHz / 16-bit / 立體聲 raw PCM**，完全不經有損壓縮
+- 傳輸：AirPlay 2 流程（HAP 配對、ChaCha20-Poly1305 加密音訊封包）+ RAOP 控制，音訊格式為 **44.1 kHz / 16-bit / 立體聲 raw PCM**，完全不經有損壓縮
 - 介面：系統匣小程式（右下角圖示），另附命令列工具
 - 安裝：Windows 安裝程式（Inno Setup），或從原始碼執行
 
