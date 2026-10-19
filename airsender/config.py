@@ -114,7 +114,12 @@ class Config:
             _LOGGER.warning("無法讀取設定檔 %s：%s，改用預設值", path, exc)
             return cls()
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        cfg = cls(**{k: v for k, v in data.items() if k in known})
+        # 0.7.0 的預設修正上限是 10 kHz；實機證明高頻不該修，0.7.2 起預設 500 Hz。
+        # 舊設定檔若仍是 10000（從未手動調整過的值），視為沿用新預設。
+        if cfg.correction_f_high == 10000:
+            cfg.correction_f_high = 500
+        return cfg
 
     def save(self) -> None:
         path = config_path()
