@@ -154,8 +154,9 @@ class CorrectionEngine:
         """給面板畫圖：量測、修正、修正後預估（dB，對 GRID）。"""
         freqs = GRID
         measured = None
-        if self.profile is not None and self.profile.measured_db:
-            _, measured = self.profile.measured()
+        profile = self.profile if self.profile is not None else CorrectionProfile.load()
+        if cfg.room_correction_enabled and profile is not None and profile.measured_db:
+            _, measured = profile.measured()
         corr = dsp.correction_curve(
             freqs, measured, strength=cfg.correction_strength / 100.0, bass_boost_db=float(cfg.bass_boost_db),
             limits=dsp.CorrectionLimits(float(cfg.correction_f_low), float(cfg.correction_f_high), float(cfg.correction_max_boost_db)),

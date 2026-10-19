@@ -70,6 +70,7 @@ class TrayApp:
         self.panel = ControlPanel(self.ui, self)
         self.quick = QuickPanel(self.ui, self)
         self.updater = UpdateChecker(self.config, self._on_update_available)
+        self.streamer.rebuild_eq()  # 讓面板一開就顯示校正曲線與預衰
         self._update_busy = ""
         self.icon = pystray.Icon(
             APP_NAME, make_icon_image(False), APP_NAME, menu=Menu(self._menu_items)

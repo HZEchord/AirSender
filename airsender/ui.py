@@ -72,6 +72,8 @@ class UiThread:
         style.configure("Muted.TLabel", foreground="#666666")
         style.configure("Big.TButton", font=(UI_FONT, 11, "bold"), padding=(16, 6))
         style.configure("Seg.Toolbutton", padding=(10, 3))
+        style.configure("Help.TLabel", foreground="#1f6fd0", font=(UI_FONT, 10, "bold"))
+        style.configure("Mono.TLabel", font=("Consolas", 10))
         self.scale = float(root.tk.call("tk", "scaling")) / (96 / 72)
         self.root = root
         self._ready.set()
@@ -144,6 +146,110 @@ class UiThread:
 
 def _run_bg(fn: Callable, *args) -> None:
     threading.Thread(target=fn, args=args, daemon=True).start()
+
+
+class Tooltip:
+    """滑鼠停留 0.4 秒後顯示的提示；文字請預先換行。"""
+
+    def __init__(self, widget, text: str, ui: UiThread) -> None:
+        self.widget = widget
+        self.text = text
+        self.ui = ui
+        self._win = None
+        self._job = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _event=None) -> None:
+        self._job = self.widget.after(400, self._show)
+
+    def _show(self) -> None:
+        import tkinter as tk  # pylint: disable=import-outside-toplevel
+
+        if self._win is not None:
+            return
+        x = self.widget.winfo_rootx() + self.ui.px(12)
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + self.ui.px(6)
+        win = tk.Toplevel(self.widget)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        frame = tk.Frame(win, background="#333333")
+        frame.pack()
+        tk.Label(
+            frame, text=self.text, justify="left", background="#ffffe6", foreground="#222222",
+            font=(UI_FONT, 9), padx=8, pady=6,
+        ).pack(padx=1, pady=1)
+        win.update_idletasks()
+        sw = win.winfo_screenwidth()
+        w = win.winfo_reqwidth()
+        if x + w > sw - 8:
+            x = max(8, sw - w - 8)
+        win.geometry(f"+{x}+{y}")
+        self._win = win
+
+    def _hide(self, _event=None) -> None:
+        if self._job is not None:
+            self.widget.after_cancel(self._job)
+            self._job = None
+        if self._win is not None:
+            self._win.destroy()
+            self._win = None
+
+
+def help_icon(parent, text: str, ui: UiThread):
+    """「?」圖示，滑鼠移上去顯示說明。"""
+    from tkinter import ttk  # pylint: disable=import-outside-toplevel
+
+    lbl = ttk.Label(parent, text="?", style="Help.TLabel", cursor="question_arrow", width=2, anchor="center")
+    Tooltip(lbl, text, ui)
+    return lbl
+
+
+HELP = {
+    "latency": (
+        "總延遲 ≈ HomePod 最小緩衝 + 接收端緩衝 + 抖動緩衝 + 約 15 ms\n"
+        "\n"
+        "HomePod mini 實測地板約 140 ms（最低組）。\n"
+        "接收端緩衝低於 100 ms 不會更低，反而會重播。\n"
+        "斷音或聲音重複時，先調高接收端緩衝一級。\n"
+        "Google Cast / DLNA 自行決定緩衝，這裡的設定對它們無效。"
+    ),
+    "drift": (
+        "電腦音效裝置與傳送節奏的時鐘有數十到數百 ppm 的差異。\n"
+        "平滑：以可變速率重取樣微調 ±0.1%，不跳音（建議）。\n"
+        "固定比率：維持 VHQ 固定比率，緩衝累積過多時一次裁掉。"
+    ),
+    "quality": "固定比率重取樣的 soxr 品質。VHQ 的 SNR 約 150 dB，\nCPU 差異很小，沒有理由不用最高。",
+    "dither": "來源是 24/32-bit 或重取樣後轉成 16-bit 時加入 ±1 LSB 的\nTPDF 雜訊，把量化失真變成均勻的底噪。建議開啟。",
+    "room": (
+        "校正流程：\n"
+        "1. 把電腦麥克風放在平常聆聽的位置，保持安靜。\n"
+        "2. 按「開始校正」，程式播放 3 次約 6 秒的掃頻音並錄音。\n"
+        "3. 完成後自動啟用；曲線圖灰色為量測、橘色為修正、藍色為預估結果。\n"
+        "\n"
+        "預設只修正 40–500 Hz 的房間主導區，最多 +6 dB。\n"
+        "啟用後整體會先衰減（預衰）以避免削波，請用接收端音量補回。\n"
+        "低音增強是獨立的低架（100 Hz 以下），不校正也能用。"
+    ),
+    "strength": "量測修正的套用比例。兩次量測間若有差異，\n70–80% 可降低過度補償的風險。",
+    "update": (
+        "向 GitHub Releases 查詢新版本，按「更新」下載安裝程式、\n"
+        "驗證 SHA-256 後靜默安裝並重新啟動。\n"
+        "倉庫為私有或離線時會顯示「無法取得」。\n"
+        "天數設 0 代表不自動檢查。"
+    ),
+    "firewall": (
+        "AirPlay 2 需要接收端反向連回電腦；Cast / DLNA 需要多播回應與連入 TCP 8765。\n"
+        "安裝程式通常已加入規則；若連線一直逾時，按此以系統管理員身分補上。"
+    ),
+    "stats": (
+        "緩衝：本機抖動緩衝目前的資料量（目標為設定值）。\n"
+        "漂移：可變速率微調量，ppm；緩衝偏離目標時會暫時變大，約一分鐘內收斂。\n"
+        "underrun：緩衝空掉補靜音的次數（沒有程式播音時會累計，屬正常）。\n"
+        "溢位：擷取端來不及處理的次數，應為 0。"
+    ),
+}
 
 
 class _PanelBase:
@@ -222,27 +328,65 @@ class _PanelBase:
             self.app.set_selected_device(device)
             self.app._select_device(device)  # pylint: disable=protected-access
 
-    def _status_lines(self) -> tuple[str, str]:
+    def _status_fields(self) -> dict[str, str]:
+        """狀態列的各欄位，數值固定寬度，避免數字變長推動版面。"""
         st = self.app.streamer
         device = st.device or self.app._current_device()  # pylint: disable=protected-access
-        line = st.state.value
+        title = st.state.value
         if device:
-            line += f" → {device.name}（{KIND_LABELS.get(device.kind, device.kind)}）"
-        parts = []
+            title += f" → {device.name}（{KIND_LABELS.get(device.kind, device.kind)}）"
+        out = {"title": title, "source": "", "buf": "", "ppm": "", "underrun": "", "overflow": "", "message": ""}
         if st.message and st.state != State.STREAMING:
-            parts.append(st.message)
+            out["message"] = st.message[:60]
         cap = st.capture_status
         if st.state == State.STREAMING and cap and cap.running:
-            parts.append(f"來源 {cap.device_name} {cap.source_rate} Hz → {cap.target_rate} Hz / 16-bit")
+            out["source"] = f"{cap.device_name[:28]}  {cap.source_rate} → {cap.target_rate} Hz"
             src = st.source
             if src is not None:
-                parts.append(
-                    f"本機緩衝 {src.buffered_ms:.0f} ms　漂移補償 {src.drift_ppm:+.0f} ppm　"
-                    f"underrun {src.underruns}　輸入溢位 {cap.overflows}"
-                )
+                out["buf"] = f"緩衝 {min(src.buffered_ms, 999):>3.0f} ms"
+                out["ppm"] = f"漂移 {max(-999, min(999, src.drift_ppm)):>+4.0f} ppm"
+                out["underrun"] = f"underrun {min(src.underruns, 99999):>5d}"
+                out["overflow"] = f"溢位 {min(cap.overflows, 99999):>5d}"
             elif st.http.clients:
-                parts.append("HTTP 接收端：" + "、".join(st.http.clients))
-        return line, "\n".join(parts)
+                out["source"] = "HTTP 接收端 " + "、".join(st.http.clients)[:40]
+        return out
+
+    def _status_lines(self) -> tuple[str, str]:
+        f = self._status_fields()
+        detail = f["message"] or f["source"]
+        stats = "  ".join(x for x in (f["buf"], f["ppm"], f["underrun"]) if x)
+        return f["title"], "\n".join(x for x in (detail, stats) if x)
+
+    def _build_stats_row(self, parent, row: int) -> None:
+        """四個固定寬度的統計欄位（等寬字型），加上「?」說明。"""
+        import tkinter as tk  # pylint: disable=import-outside-toplevel
+        from tkinter import ttk  # pylint: disable=import-outside-toplevel
+
+        v = self._vars
+        frame = ttk.Frame(parent)
+        frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        for key, width in (("buf", 11), ("ppm", 14), ("underrun", 15), ("overflow", 11)):
+            v[f"stat_{key}"] = tk.StringVar()
+            ttk.Label(frame, textvariable=v[f"stat_{key}"], style="Mono.TLabel", width=width, anchor="w").pack(side="left")
+        help_icon(frame, HELP["stats"], self.ui).pack(side="left", padx=(4, 0))
+        self._stats_frame = frame
+        frame.grid_remove()
+
+    def _set_stats(self) -> None:
+        f = self._status_fields()
+        v = self._vars
+        v["status"].set(f["title"])
+        if "detail" in v:
+            v["detail"].set(f["message"] or f["source"])
+        for key in ("buf", "ppm", "underrun", "overflow"):
+            if f"stat_{key}" in v:
+                v[f"stat_{key}"].set(f[key])
+        frame = getattr(self, "_stats_frame", None)
+        if frame is not None:
+            if f["buf"]:
+                frame.grid()
+            else:
+                frame.grid_remove()
 
     # ------------------------------------------------------------ 與 Config 同步
     def _sync_from_config(self) -> None:
@@ -426,26 +570,29 @@ class QuickPanel(_PanelBase):
 
         v["status"] = tk.StringVar()
         v["detail"] = tk.StringVar()
-        ttk.Label(outer, textvariable=v["status"], style="Quick.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(outer, textvariable=v["detail"], style="Muted.TLabel", wraplength=self.ui.px(360), justify="left").grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(2, 8)
+        ttk.Label(outer, textvariable=v["status"], style="Quick.TLabel", width=44, anchor="w").grid(
+            row=0, column=0, columnspan=2, sticky="w"
         )
+        ttk.Label(outer, textvariable=v["detail"], style="Muted.TLabel", width=56, anchor="w").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(2, 0)
+        )
+        self._build_stats_row(outer, 2)
 
         v["toggle_text"] = tk.StringVar(value="開始串流")
         btns = ttk.Frame(outer)
-        btns.grid(row=2, column=0, columnspan=2, sticky="ew")
+        btns.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         ttk.Button(btns, textvariable=v["toggle_text"], style="Big.TButton", command=self._toggle).pack(side="left")
         ttk.Button(btns, text="重新連線", command=lambda: _run_bg(self.app._reconnect)).pack(side="left", padx=(6, 0))  # pylint: disable=protected-access
         ttk.Button(btns, text="控制面板…", command=self._open_full).pack(side="right")
 
-        ttk.Label(outer, text="接收端").grid(row=3, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(outer, text="接收端").grid(row=4, column=0, sticky="w", pady=(10, 0))
         self._device_combo = ttk.Combobox(outer, state="readonly", width=40)
-        self._device_combo.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
+        self._device_combo.grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
         self._device_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_device_selected(self._device_combo))
 
-        ttk.Label(outer, text="音量").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(outer, text="音量").grid(row=5, column=0, sticky="w", pady=(8, 0))
         volf = ttk.Frame(outer)
-        volf.grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        volf.grid(row=5, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
         volf.columnconfigure(0, weight=1)
         v["volume"] = tk.DoubleVar(value=float(cfg.volume if cfg.volume is not None else 50))
         v["volume_off"] = tk.BooleanVar(value=cfg.volume is None)
@@ -457,9 +604,9 @@ class QuickPanel(_PanelBase):
         ttk.Label(volf, textvariable=v["volume_label"], width=5, anchor="e").grid(row=0, column=1, padx=(6, 0))
         ttk.Checkbutton(volf, text="不控制", variable=v["volume_off"], command=self._on_volume_off).grid(row=0, column=2, padx=(8, 0))
 
-        ttk.Label(outer, text="延遲").grid(row=5, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(outer, text="延遲").grid(row=6, column=0, sticky="w", pady=(8, 0))
         seg = ttk.Frame(outer)
-        seg.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        seg.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
         v["quick_latency"] = tk.StringVar(value=latency_preset_name(cfg))
         for name in LATENCY_PRESETS:
             ttk.Radiobutton(
@@ -473,7 +620,7 @@ class QuickPanel(_PanelBase):
 
         v["update_text"] = tk.StringVar()
         upd = ttk.Frame(outer)
-        upd.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        upd.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Label(upd, textvariable=v["update_text"], style="Muted.TLabel").pack(side="left")
         self._update_btn = ttk.Button(upd, text="更新", command=lambda: _run_bg(self.app._update_now))  # pylint: disable=protected-access
         upd.grid_remove()
@@ -501,9 +648,7 @@ class QuickPanel(_PanelBase):
         if self.win is None:
             return
         self._fill_device_combo(self._device_combo)
-        line, detail = self._status_lines()
-        self._vars["status"].set(line)
-        self._vars["detail"].set(detail)
+        self._set_stats()
         self._refresh_update_row()
         self._sync_from_config()
 
@@ -524,9 +669,7 @@ class QuickPanel(_PanelBase):
         self._tick_job = None
         if not self._visible():
             return
-        line, detail = self._status_lines()
-        self._vars["status"].set(line)
-        self._vars["detail"].set(detail)
+        self._set_stats()
         self._sync_from_config()
         # 內容高度可能改變（例如出現更新列），重新依錨點擺放，位置不變
         self._place()
@@ -573,7 +716,6 @@ class ControlPanel(_PanelBase):
         self.win = win
         v = self._vars
         cfg = self.app.config
-        wrap = self.ui.px(470)
 
         outer = ttk.Frame(win, padding=14)
         outer.grid(sticky="nsew")
@@ -584,13 +726,16 @@ class ControlPanel(_PanelBase):
         head.columnconfigure(0, weight=1)
         v["status"] = tk.StringVar(value="閒置")
         v["detail"] = tk.StringVar(value="")
-        ttk.Label(head, textvariable=v["status"], style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(head, textvariable=v["detail"], style="Muted.TLabel", wraplength=wrap, justify="left").grid(
+        ttk.Label(head, textvariable=v["status"], style="Title.TLabel", width=40, anchor="w").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(head, textvariable=v["detail"], style="Muted.TLabel", width=58, anchor="w").grid(
             row=1, column=0, sticky="w", pady=(2, 0)
         )
+        self._build_stats_row(head, 2)
         v["toggle_text"] = tk.StringVar(value="開始串流")
         ttk.Button(head, textvariable=v["toggle_text"], style="Big.TButton", command=self._toggle).grid(
-            row=0, column=1, rowspan=2, sticky="e", padx=(12, 0)
+            row=0, column=1, rowspan=3, sticky="e", padx=(12, 0)
         )
 
         ttk.Separator(outer).grid(row=1, column=0, sticky="ew", pady=10)
@@ -626,19 +771,24 @@ class ControlPanel(_PanelBase):
         self._bind_drag(scale)
         scale.bind("<ButtonRelease-1>", lambda _e: self._on_volume_release())
         ttk.Label(volf, textvariable=v["volume_label"], width=6, anchor="e").grid(row=0, column=1, padx=(8, 0))
-        ttk.Checkbutton(volf, text="不控制接收端音量", variable=v["volume_off"], command=self._on_volume_off).grid(
+        ttk.Checkbutton(volf, text="不控制", variable=v["volume_off"], command=self._on_volume_off).grid(
             row=1, column=0, sticky="w", pady=(4, 0)
         )
 
         # ---- 延遲
-        latf = ttk.LabelFrame(outer, text="延遲（放開滑桿後套用，會重新連線）", padding=(10, 6))
+        latf = ttk.LabelFrame(outer, text="延遲", padding=(10, 6))
         latf.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         latf.columnconfigure(1, weight=1)
         v["preset"] = tk.StringVar(value=latency_preset_name(cfg))
         ttk.Label(latf, text="預設組").grid(row=0, column=0, sticky="w")
-        pc = ttk.Combobox(latf, textvariable=v["preset"], state="readonly", values=list(LATENCY_PRESETS) + ["自訂"], width=22)
-        pc.grid(row=0, column=1, sticky="w", padx=8)
+        pc_row = ttk.Frame(latf)
+        pc_row.grid(row=0, column=1, columnspan=2, sticky="ew", padx=8)
+        pc = ttk.Combobox(pc_row, textvariable=v["preset"], state="readonly", values=list(LATENCY_PRESETS) + ["自訂"], width=18)
+        pc.pack(side="left")
         pc.bind("<<ComboboxSelected>>", self._on_preset_selected)
+        v["latency_est"] = tk.StringVar()
+        ttk.Label(pc_row, textvariable=v["latency_est"], style="Muted.TLabel", width=12, anchor="w").pack(side="left", padx=(8, 0))
+        help_icon(pc_row, HELP["latency"], self.ui).pack(side="right")
         v["latency"] = tk.DoubleVar(value=float(cfg.receiver_latency_ms))
         v["latency_label"] = tk.StringVar()
         ttk.Label(latf, text="接收端緩衝").grid(row=1, column=0, sticky="w", pady=(4, 0))
@@ -663,10 +813,6 @@ class ControlPanel(_PanelBase):
         self._bind_drag(s3)
         s3.bind("<ButtonRelease-1>", lambda _e: self._apply_latency())
         ttk.Label(latf, textvariable=v["lmin_label"], width=8, anchor="e").grid(row=3, column=2, pady=(4, 0))
-        v["latency_hint"] = tk.StringVar()
-        ttk.Label(latf, textvariable=v["latency_hint"], style="Muted.TLabel", wraplength=wrap, justify="left").grid(
-            row=4, column=0, columnspan=3, sticky="w", pady=(4, 0)
-        )
 
         # ---- 音質與來源
         qf = ttk.LabelFrame(outer, text="音質與擷取來源", padding=(10, 6))
@@ -675,37 +821,42 @@ class ControlPanel(_PanelBase):
         ttk.Label(qf, text="時鐘漂移補償").grid(row=0, column=0, sticky="w")
         v["drift"] = tk.StringVar(value=cfg.drift_compensation)
         dr = ttk.Frame(qf)
-        dr.grid(row=0, column=1, columnspan=2, sticky="w", padx=8)
+        dr.grid(row=0, column=1, columnspan=2, sticky="ew", padx=8)
         for label, mode in DRIFT_MODES.items():
-            ttk.Radiobutton(dr, text=label, value=mode, variable=v["drift"], command=self._on_drift).pack(side="left", padx=(0, 10))
+            ttk.Radiobutton(dr, text=label.split("（")[0].replace("：可變速率微調", ""), value=mode, variable=v["drift"], command=self._on_drift).pack(side="left", padx=(0, 10))
+        help_icon(dr, HELP["drift"], self.ui).pack(side="right")
         ttk.Label(qf, text="重取樣品質").grid(row=1, column=0, sticky="w", pady=(4, 0))
         v["quality"] = tk.StringVar()
         qc = ttk.Combobox(qf, textvariable=v["quality"], state="readonly", values=list(RESAMPLE_QUALITIES), width=14)
         qc.grid(row=1, column=1, sticky="w", padx=8, pady=(4, 0))
         qc.bind("<<ComboboxSelected>>", lambda _e: self.app._set_quality(RESAMPLE_QUALITIES[v["quality"].get()]))  # pylint: disable=protected-access
         v["dither"] = tk.BooleanVar(value=cfg.dither)
-        ttk.Checkbutton(qf, text="TPDF dither（轉 16-bit 時）", variable=v["dither"], command=self._on_dither).grid(
-            row=1, column=2, sticky="w", pady=(4, 0)
-        )
+        dith = ttk.Frame(qf)
+        dith.grid(row=1, column=2, sticky="e", pady=(4, 0))
+        help_icon(dith, HELP["quality"] + "\n\n" + HELP["dither"], self.ui).pack(side="right")
+        ttk.Checkbutton(dith, text="TPDF dither", variable=v["dither"], command=self._on_dither).pack(side="right", padx=(0, 6))
         ttk.Label(qf, text="擷取來源").grid(row=2, column=0, sticky="w", pady=(4, 0))
         self._capture_combo = ttk.Combobox(qf, state="readonly", width=40)
         self._capture_combo.grid(row=2, column=1, columnspan=2, sticky="ew", padx=8, pady=(4, 0))
         self._capture_combo.bind("<<ComboboxSelected>>", self._on_capture_selected)
 
         # ---- 房間校正 / 低音
-        rf = ttk.LabelFrame(outer, text="房間校正與低音（即時生效，不必重連）", padding=(10, 6))
+        rf = ttk.LabelFrame(outer, text="房間校正與低音", padding=(10, 6))
         rf.grid(row=6, column=0, sticky="ew", pady=(10, 0))
         rf.columnconfigure(1, weight=1)
         v["room_enabled"] = tk.BooleanVar(value=cfg.room_correction_enabled)
-        self._room_check = ttk.Checkbutton(rf, text="啟用房間校正", variable=v["room_enabled"],
+        self._room_check = ttk.Checkbutton(rf, text="啟用校正", variable=v["room_enabled"],
                                            command=lambda: self.app._toggle_room_correction(v["room_enabled"].get()))  # pylint: disable=protected-access
         self._room_check.grid(row=0, column=0, sticky="w")
         v["room_status"] = tk.StringVar()
-        ttk.Label(rf, textvariable=v["room_status"], style="Muted.TLabel", wraplength=wrap, justify="left").grid(
+        ttk.Label(rf, textvariable=v["room_status"], style="Muted.TLabel", width=34, anchor="w").grid(
             row=0, column=1, sticky="w", padx=8
         )
-        self._cal_btn = ttk.Button(rf, text="開始校正…", command=self._start_calibration)
-        self._cal_btn.grid(row=0, column=2, sticky="e")
+        cal_row = ttk.Frame(rf)
+        cal_row.grid(row=0, column=2, sticky="e")
+        self._cal_btn = ttk.Button(cal_row, text="開始校正…", command=self._start_calibration)
+        self._cal_btn.pack(side="left")
+        help_icon(cal_row, HELP["room"], self.ui).pack(side="left", padx=(4, 0))
         ttk.Label(rf, text="低音增強").grid(row=1, column=0, sticky="w", pady=(4, 0))
         v["bass"] = tk.DoubleVar(value=float(cfg.bass_boost_db))
         v["bass_label"] = tk.StringVar()
@@ -714,7 +865,10 @@ class ControlPanel(_PanelBase):
         self._bind_drag(sb)
         sb.bind("<ButtonRelease-1>", lambda _e: self._apply_bass())
         ttk.Label(rf, textvariable=v["bass_label"], width=8, anchor="e").grid(row=1, column=2, pady=(4, 0))
-        ttk.Label(rf, text="校正強度").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        strength_lbl = ttk.Frame(rf)
+        strength_lbl.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(strength_lbl, text="校正強度").pack(side="left")
+        help_icon(strength_lbl, HELP["strength"], self.ui).pack(side="left", padx=(2, 0))
         v["strength"] = tk.DoubleVar(value=float(cfg.correction_strength))
         v["strength_label"] = tk.StringVar()
         ss = ttk.Scale(rf, from_=0, to=100, variable=v["strength"], command=lambda _v: self._update_labels())
@@ -722,17 +876,20 @@ class ControlPanel(_PanelBase):
         self._bind_drag(ss)
         ss.bind("<ButtonRelease-1>", lambda _e: self._apply_strength())
         ttk.Label(rf, textvariable=v["strength_label"], width=8, anchor="e").grid(row=2, column=2, pady=(4, 0))
-        self._curve = tk.Canvas(rf, height=self.ui.px(110), background="#ffffff", highlightthickness=1, highlightbackground="#cccccc")
+        self._curve = tk.Canvas(rf, height=self.ui.px(100), background="#ffffff", highlightthickness=1, highlightbackground="#cccccc")
         self._curve.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        self._curve.bind("<Configure>", lambda _e: self._draw_curves())
         v["cal_progress"] = tk.StringVar()
-        ttk.Label(rf, textvariable=v["cal_progress"], style="Muted.TLabel").grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        ttk.Label(rf, textvariable=v["cal_progress"], style="Muted.TLabel", width=60, anchor="w").grid(
+            row=4, column=0, columnspan=3, sticky="w", pady=(2, 0)
+        )
 
         # ---- 更新
         upf = ttk.LabelFrame(outer, text="更新", padding=(10, 6))
         upf.grid(row=7, column=0, sticky="ew", pady=(10, 0))
         upf.columnconfigure(0, weight=1)
         v["update_text"] = tk.StringVar()
-        ttk.Label(upf, textvariable=v["update_text"], wraplength=wrap, justify="left").grid(row=0, column=0, sticky="w")
+        ttk.Label(upf, textvariable=v["update_text"], width=40, anchor="w").grid(row=0, column=0, sticky="w")
         self._update_btn = ttk.Button(upf, text="更新", command=lambda: _run_bg(self.app._update_now))  # pylint: disable=protected-access
         self._update_btn.grid(row=0, column=1, padx=(8, 0))
         ttk.Button(upf, text="立即檢查", command=lambda: _run_bg(self.app._check_updates_now)).grid(  # pylint: disable=protected-access
@@ -740,29 +897,31 @@ class ControlPanel(_PanelBase):
         )
         v["update_days"] = tk.IntVar(value=cfg.update_check_days)
         daysf = ttk.Frame(upf)
-        daysf.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        daysf.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         ttk.Label(daysf, text="每").pack(side="left")
         sp = ttk.Spinbox(daysf, from_=0, to=90, width=4, textvariable=v["update_days"], command=self._on_update_days)
         sp.pack(side="left", padx=4)
         sp.bind("<FocusOut>", lambda _e: self._on_update_days())
-        ttk.Label(daysf, text="天自動檢查（0 = 不檢查，預設關閉）").pack(side="left")
+        ttk.Label(daysf, text="天自動檢查").pack(side="left")
+        help_icon(daysf, HELP["update"], self.ui).pack(side="right")
 
         # ---- 選項
         opt = ttk.Frame(outer)
         opt.grid(row=8, column=0, sticky="ew", pady=(10, 0))
         v["auto_stream"] = tk.BooleanVar(value=cfg.autostart_stream)
         v["auto_win"] = tk.BooleanVar(value=autostart.is_enabled())
-        ttk.Checkbutton(opt, text="啟動後自動連線到上次裝置", variable=v["auto_stream"], command=self._on_auto_stream).grid(
+        ttk.Checkbutton(opt, text="啟動後自動連線", variable=v["auto_stream"], command=self._on_auto_stream).grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Checkbutton(opt, text="登入 Windows 時自動啟動", variable=v["auto_win"], command=self._on_auto_win).grid(
+        ttk.Checkbutton(opt, text="登入時自動啟動", variable=v["auto_win"], command=self._on_auto_win).grid(
             row=0, column=1, sticky="w", padx=(12, 0)
         )
         btns = ttk.Frame(outer)
         btns.grid(row=9, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(btns, text="允許通過 Windows 防火牆", command=self.app._add_firewall_rules).pack(side="left")  # pylint: disable=protected-access
-        ttk.Button(btns, text="開啟記錄資料夾", command=self.app._open_logs).pack(side="left", padx=(6, 0))  # pylint: disable=protected-access
-        ttk.Button(btns, text="結束 AirSender", command=self.app._quit).pack(side="left", padx=(6, 0))  # pylint: disable=protected-access
+        ttk.Button(btns, text="防火牆規則", command=self.app._add_firewall_rules).pack(side="left")  # pylint: disable=protected-access
+        help_icon(btns, HELP["firewall"], self.ui).pack(side="left", padx=(2, 0))
+        ttk.Button(btns, text="記錄資料夾", command=self.app._open_logs).pack(side="left", padx=(6, 0))  # pylint: disable=protected-access
+        ttk.Button(btns, text="結束", command=self.app._quit).pack(side="left", padx=(6, 0))  # pylint: disable=protected-access
         ttk.Label(btns, text=f"{APP_NAME} v{__version__}", style="Muted.TLabel").pack(side="right")
 
     # ------------------------------------------------------------ 更新
@@ -786,51 +945,47 @@ class ControlPanel(_PanelBase):
         self._capture_combo.current(idx)
 
     def _refresh_status(self) -> None:
-        line, detail = self._status_lines()
-        self._vars["status"].set(line)
-        self._vars["detail"].set(detail)
+        self._set_stats()
         device = self.app.streamer.device or self.app._current_device()  # pylint: disable=protected-access
         is_airplay = device is not None and device.kind == "airplay"
         self._pair_btn.state(["!disabled"] if is_airplay else ["disabled"])
         self._pw_btn.state(["!disabled"] if is_airplay else ["disabled"])
-        if device is None:
-            hint = "請先選擇接收端。"
-        elif is_airplay:
-            cfg = self.app.config
+        cfg = self.app.config
+        if is_airplay:
             est = cfg.airplay_latency_min_ms + cfg.receiver_latency_ms + cfg.jitter_buffer_ms + 15
-            hint = (
-                f"AirPlay 總延遲 ≈ HomePod 最小緩衝 + 接收端緩衝 + 抖動緩衝 + 約 15 ms ≈ {est} ms。"
-                "HomePod mini 實測與此公式一致，地板約 140 ms（接收端緩衝低於 100 ms 不再更低且會重播）。"
-                "若斷音或聲音重複，先調高接收端緩衝。"
-            )
+            self._vars["latency_est"].set(f"≈ {est} ms")
+        elif device is not None:
+            self._vars["latency_est"].set("接收端自行緩衝")
         else:
-            hint = "此種類接收端自行決定緩衝（2–5 秒），延遲設定對它無效。"
-        self._vars["latency_hint"].set(hint)
+            self._vars["latency_est"].set("")
         from .roomcal import ENGINE, CorrectionProfile  # pylint: disable=import-outside-toplevel
 
         prof = CorrectionProfile.load()
         if prof is None:
-            self._vars["room_status"].set("尚未校正；低音增強可直接使用")
+            self._vars["room_status"].set("尚未校正")
             self._room_check.state(["disabled"])
         else:
             self._room_check.state(["!disabled"])
-            self._vars["room_status"].set(
-                f"校正檔 {prof.created}，{prof.positions} 個位置，SNR {prof.snr_db:.0f} dB"
-                + (f"，預先衰減 {ENGINE.pre_gain_db:.1f} dB" if ENGINE.active else "")
-            )
+            when = prof.created[5:] if len(prof.created) > 5 else prof.created
+            text = f"{when} · {prof.positions} 位置 · SNR {prof.snr_db:.0f} dB"
+            if ENGINE.active:
+                text += f" · 預衰 {ENGINE.pre_gain_db:.0f} dB"
+            self._vars["room_status"].set(text)
         self._cal_btn.state(["disabled"] if getattr(self, "_cal_running", False) else ["!disabled"])
         self._draw_curves()
         from .updater import describe_last_check  # pylint: disable=import-outside-toplevel
 
         busy = self.app._update_busy  # pylint: disable=protected-access
+        checked = describe_last_check(cfg)
+        checked = checked[5:] if checked and checked[0].isdigit() else checked
         if busy:
             text = busy
-        elif self._update_text():
-            text = self._update_text()
+        elif self.app.updater.available is not None:
+            text = f"有新版本 v{self.app.updater.available.version}"
         elif self.app.updater.last_error:
-            text = f"{self.app.updater.last_error}（上次檢查：{describe_last_check(self.app.config)}）"
+            text = f"無法取得 · 上次 {checked}"
         else:
-            text = f"目前 v{__version__} 已是最新（上次檢查：{describe_last_check(self.app.config)}）"
+            text = f"v{__version__} · 上次檢查 {checked}"
         self._vars["update_text"].set(text)
         enabled = self.app.updater.available is not None and not busy
         self._update_btn.state(["!disabled"] if enabled else ["disabled"])
