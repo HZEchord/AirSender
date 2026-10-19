@@ -1,7 +1,7 @@
 ; Inno Setup 6 安裝腳本。由 build.ps1 呼叫；需先以 PyInstaller 產生 ..\dist\AirSender\。
 
 #define MyAppName "AirSender"
-#define MyAppVersion "0.4.0"
+#define MyAppVersion "0.5.0"
 #define MyAppPublisher "AirSender"
 #define MyAppExeName "AirSender.exe"
 
@@ -57,6 +57,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#MyAppName}"" dir=in action=allow program=""{app}\{#MyAppExeName}"" enable=yes profile=any"; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode; StatusMsg: "設定 Windows 防火牆..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#MyAppName}"" dir=in action=allow program=""{app}\AirSenderCLI.exe"" enable=yes profile=any"; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode; StatusMsg: "設定 Windows 防火牆..."
 Filename: "{app}\{#MyAppExeName}"; Description: "啟動 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; 自動更新走靜默安裝：裝完以一般使用者權限重新啟動程式
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser; Check: WizardSilent
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExeName} /F & taskkill /IM AirSenderCLI.exe /F"; Flags: runhidden; RunOnceId: "KillApp"

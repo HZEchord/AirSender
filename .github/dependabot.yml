@@ -1,0 +1,19 @@
+# 開發端的「定期檢查更新」：Dependabot 每週檢查 Python 相依與 GitHub Actions 的新版並自動開 PR；
+# CI 對 PR 跑 lint、測試與打包。合併後打 tag 即發布，使用者端的更新檢查就會收到新版本。
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Taipei
+    groups:
+      python-deps:
+        patterns: ["*"]
+    labels: [dependencies]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

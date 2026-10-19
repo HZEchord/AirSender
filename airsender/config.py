@@ -83,6 +83,11 @@ class Config:
     # "trim" = 固定比率 VHQ，緩衝超過高水位時一次裁掉（偶發小跳音）
     drift_compensation: str = "smooth"
 
+    # 自動更新
+    update_check_days: int = 10  # 每幾天查一次 GitHub Releases（0 = 不檢查）
+    last_update_check: str = ""  # ISO 時間
+    update_skip_version: str = ""  # 使用者選擇略過的版本
+
     # 其他
     volume: Optional[int] = None  # None = 不更動接收端音量
     autostart_stream: bool = False  # 程式啟動後自動連到上次的裝置

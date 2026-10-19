@@ -128,6 +128,18 @@ class UiThread:
 
         self.call_sync(lambda: messagebox.showinfo(title, message, parent=self.root))
 
+    def ask_yes_no(self, message: str, title: str = APP_NAME) -> bool:
+        from tkinter import messagebox  # pylint: disable=import-outside-toplevel
+
+        def _ask():
+            self.root.attributes("-topmost", True)
+            try:
+                return bool(messagebox.askyesno(title, message, parent=self.root))
+            finally:
+                self.root.attributes("-topmost", False)
+
+        return bool(self.call_sync(_ask))
+
 
 def _run_bg(fn: Callable, *args) -> None:
     threading.Thread(target=fn, args=args, daemon=True).start()
@@ -262,6 +274,12 @@ class _PanelBase:
             v["latency_label"].set(f"{self._snap(v['latency'].get(), self.LATENCY_STEP)} ms")
         if "jitter_label" in v:
             v["jitter_label"].set(f"{self._snap(v['jitter'].get(), self.JITTER_STEP)} ms")
+
+    def _update_text(self) -> str:
+        rel = self.app.updater.available
+        if rel is not None:
+            return f"有新版本 v{rel.version}，點「更新」下載安裝"
+        return ""
 
     @staticmethod
     def _snap(value: float, step: int) -> int:
@@ -419,6 +437,14 @@ class QuickPanel(_PanelBase):
                 command=lambda m=ms: self._apply_latency(latency=m),
             ).pack(side="left", padx=(0, 4))
 
+        v["update_text"] = tk.StringVar()
+        upd = ttk.Frame(outer)
+        upd.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(upd, textvariable=v["update_text"], style="Muted.TLabel").pack(side="left")
+        self._update_btn = ttk.Button(upd, text="更新", command=lambda: _run_bg(self.app._update_now))  # pylint: disable=protected-access
+        upd.grid_remove()
+        self._update_row = upd
+
         win.bind("<Escape>", lambda _e: self._hide())
         win.bind("<FocusOut>", self._on_focus_out)
 
@@ -444,7 +470,17 @@ class QuickPanel(_PanelBase):
         line, detail = self._status_lines()
         self._vars["status"].set(line)
         self._vars["detail"].set(detail)
+        self._refresh_update_row()
         self._sync_from_config()
+
+    def _refresh_update_row(self) -> None:
+        text = self._update_text()
+        self._vars["update_text"].set(text)
+        if text:
+            self._update_row.grid()
+            self._update_btn.pack(side="right")
+        else:
+            self._update_row.grid_remove()
 
     def _schedule_tick(self) -> None:
         if self._tick_job is None:
@@ -608,9 +644,29 @@ class ControlPanel(_PanelBase):
         self._capture_combo.grid(row=2, column=1, columnspan=2, sticky="ew", padx=8, pady=(4, 0))
         self._capture_combo.bind("<<ComboboxSelected>>", self._on_capture_selected)
 
+        # ---- 更新
+        upf = ttk.LabelFrame(outer, text="更新", padding=(10, 6))
+        upf.grid(row=6, column=0, sticky="ew", pady=(10, 0))
+        upf.columnconfigure(0, weight=1)
+        v["update_text"] = tk.StringVar()
+        ttk.Label(upf, textvariable=v["update_text"], wraplength=wrap, justify="left").grid(row=0, column=0, sticky="w")
+        self._update_btn = ttk.Button(upf, text="更新", command=lambda: _run_bg(self.app._update_now))  # pylint: disable=protected-access
+        self._update_btn.grid(row=0, column=1, padx=(8, 0))
+        ttk.Button(upf, text="立即檢查", command=lambda: _run_bg(self.app._check_updates_now)).grid(  # pylint: disable=protected-access
+            row=0, column=2, padx=(6, 0)
+        )
+        v["update_days"] = tk.IntVar(value=cfg.update_check_days)
+        daysf = ttk.Frame(upf)
+        daysf.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(daysf, text="每").pack(side="left")
+        sp = ttk.Spinbox(daysf, from_=0, to=90, width=4, textvariable=v["update_days"], command=self._on_update_days)
+        sp.pack(side="left", padx=4)
+        sp.bind("<FocusOut>", lambda _e: self._on_update_days())
+        ttk.Label(daysf, text="天自動檢查（0 = 不檢查）").pack(side="left")
+
         # ---- 選項
         opt = ttk.Frame(outer)
-        opt.grid(row=6, column=0, sticky="ew", pady=(10, 0))
+        opt.grid(row=7, column=0, sticky="ew", pady=(10, 0))
         v["auto_stream"] = tk.BooleanVar(value=cfg.autostart_stream)
         v["auto_win"] = tk.BooleanVar(value=autostart.is_enabled())
         ttk.Checkbutton(opt, text="啟動後自動連線到上次裝置", variable=v["auto_stream"], command=self._on_auto_stream).grid(
@@ -620,7 +676,7 @@ class ControlPanel(_PanelBase):
             row=0, column=1, sticky="w", padx=(12, 0)
         )
         btns = ttk.Frame(outer)
-        btns.grid(row=7, column=0, sticky="ew", pady=(8, 0))
+        btns.grid(row=8, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(btns, text="允許通過 Windows 防火牆", command=self.app._add_firewall_rules).pack(side="left")  # pylint: disable=protected-access
         ttk.Button(btns, text="開啟記錄資料夾", command=self.app._open_logs).pack(side="left", padx=(6, 0))  # pylint: disable=protected-access
         ttk.Button(btns, text="結束 AirSender", command=self.app._quit).pack(side="left", padx=(6, 0))  # pylint: disable=protected-access
@@ -664,6 +720,28 @@ class ControlPanel(_PanelBase):
         else:
             hint = "此種類接收端自行決定緩衝（2–5 秒），延遲設定對它無效。"
         self._vars["latency_hint"].set(hint)
+        from .updater import describe_last_check  # pylint: disable=import-outside-toplevel
+
+        busy = self.app._update_busy  # pylint: disable=protected-access
+        if busy:
+            text = busy
+        elif self._update_text():
+            text = self._update_text()
+        elif self.app.updater.last_error:
+            text = f"{self.app.updater.last_error}（上次檢查：{describe_last_check(self.app.config)}）"
+        else:
+            text = f"目前 v{__version__} 已是最新（上次檢查：{describe_last_check(self.app.config)}）"
+        self._vars["update_text"].set(text)
+        enabled = self.app.updater.available is not None and not busy
+        self._update_btn.state(["!disabled"] if enabled else ["disabled"])
+
+    def _on_update_days(self) -> None:
+        try:
+            days = int(self._vars["update_days"].get())
+        except Exception:  # pylint: disable=broad-except
+            return
+        self.app.config.update_check_days = max(0, min(365, days))
+        self.app.config.save()
 
     def _schedule_tick(self) -> None:
         if self._tick_job is None:

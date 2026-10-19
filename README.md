@@ -147,6 +147,14 @@ AirSenderCLI.exe --device 客廳 --headless --latency 250
   兩者都需要安裝程式加入的防火牆規則（放行整個程式）。沒有規則時，打包版會掃不到 Cast / DLNA 裝置，
   但 AirPlay 不受影響（pyatv 的 mDNS 要求單播回應）。
 
+## 更新與維護
+
+- **使用者端**：AirSender 每 10 天向 GitHub Releases 查一次（控制面板「更新」區可改週期或立即檢查）。
+  有新版時會通知；按「更新」會下載安裝程式、以 GitHub 提供的 SHA-256 驗證、靜默安裝後自動重新啟動。
+  更新檢查需要倉庫為公開；私有倉庫測試可設環境變數 `AIRSENDER_GITHUB_TOKEN`。
+- **開發端**：Dependabot 每週一檢查 pyatv 等套件與 GitHub Actions 的新版並開 PR，CI 自動 lint、測試、打包。
+  維護流程只剩：看 PR → 合併 → 打 `vX.Y.Z` 標籤 → CI 發布 → 使用者端自動收到。
+
 ## 行為細節
 
 - **Windows 沒有任何程式在播音時**，WASAPI loopback 不會送出資料，AirSender 會送靜音維持連線。播放恢復時會先重新累積到抖動緩衝量再開始送（期間仍是靜音），確保延遲與穩定度與剛開始串流時一致。

@@ -57,3 +57,20 @@ def show_info(message: str, title: str = APP_NAME) -> None:
         messagebox.showinfo(title, message, parent=root)
     finally:
         root.destroy()
+
+
+def ask_yes_no(message: str, title: str = APP_NAME) -> bool:
+    if _ui is not None:
+        return bool(_ui.ask_yes_no(message, title))
+    try:
+        import tkinter as tk  # pylint: disable=import-outside-toplevel
+        from tkinter import messagebox  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return False
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        return bool(messagebox.askyesno(title, message, parent=root))
+    finally:
+        root.destroy()

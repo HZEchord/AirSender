@@ -14,12 +14,13 @@ import pystray
 from PIL import Image, ImageDraw
 from pystray import Menu, MenuItem
 
-from . import APP_NAME, autostart, dialogs, firewall
+from . import APP_NAME, __version__, autostart, dialogs, firewall
 from .capture import list_loopback_devices
 from .config import Config, log_dir
 from .sinks import HTTP_PULL_KINDS, KIND_LABELS
 from .streamer import Device, State, Streamer
 from .ui import ControlPanel, QuickPanel, UiThread
+from .updater import Release, UpdateChecker, download, launch_installer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,6 +68,8 @@ class TrayApp:
         self.ui = UiThread()
         self.panel = ControlPanel(self.ui, self)
         self.quick = QuickPanel(self.ui, self)
+        self.updater = UpdateChecker(self.config, self._on_update_available)
+        self._update_busy = ""
         self.icon = pystray.Icon(
             APP_NAME, make_icon_image(False), APP_NAME, menu=Menu(self._menu_items)
         )
@@ -94,6 +97,8 @@ class TrayApp:
             then_autostart=self.config.autostart_stream
             and bool(self.config.device_identifier)
         )
+        if self.config.update_check_days > 0:
+            self.updater.start()
 
     # ------------------------------------------------------------ 狀態
     def _on_state(self, state: State, message: str) -> None:
@@ -324,6 +329,60 @@ class TrayApp:
     def _toggle_autostart_windows(self) -> None:
         autostart.set_enabled(not autostart.is_enabled())
 
+    # ------------------------------------------------------------ 更新
+    def _on_update_available(self, release: Release) -> None:
+        self._notify(f"有新版本 v{release.version}，開啟快捷面板或控制面板按「更新」")
+        self._update_menu()
+        self.panel.refresh()
+        self.quick.refresh()
+
+    def _check_updates_now(self) -> None:
+        self._update_busy = "檢查中…"
+        self.panel.refresh()
+        try:
+            release = self.updater.check(force=True)
+        finally:
+            self._update_busy = ""
+        if release is None:
+            self._notify(self.updater.last_error or f"目前 v{__version__} 已是最新版本")
+        self.panel.refresh()
+        self.quick.refresh()
+
+    def _update_now(self) -> None:
+        release = self.updater.available
+        if release is None or self._update_busy:
+            return
+        notes = release.notes.strip()
+        if len(notes) > 600:
+            notes = notes[:600] + "…"
+        message = (
+            f"更新到 v{release.version}？\n\n安裝程式約 {release.asset_size / 1048576:.0f} MB，"
+            f"下載後會關閉 AirSender、靜默安裝並重新啟動。\n\n{notes}"
+        )
+        if not dialogs.ask_yes_no(message):
+            return
+        try:
+
+            def progress(done: int, total: int) -> None:
+                pct = f"{100 * done / total:.0f}%" if total else f"{done / 1048576:.0f} MB"
+                self._update_busy = f"下載中 {pct}"
+                self.icon.title = f"{APP_NAME}：下載更新 {pct}"
+
+            self._update_busy = "下載中…"
+            self.panel.refresh()
+            path = download(release, progress)
+            self._update_busy = "啟動安裝程式…"
+            self.panel.refresh()
+            if not launch_installer(path):
+                raise RuntimeError("無法啟動安裝程式（可能已取消 UAC）")
+            # 安裝程式會關閉本程式並在完成後重新啟動；主動結束比較乾淨
+            self._quit()
+        except Exception as exc:  # pylint: disable=broad-except
+            _LOGGER.warning("更新失敗：%s", exc)
+            self._update_busy = ""
+            dialogs.show_info(f"更新失敗：{exc}")
+            self.panel.refresh()
+
     def _add_firewall_rules(self) -> None:
         if firewall.add_rules():
             self._notify("已送出防火牆規則設定（需在 UAC 視窗按「是」）")
@@ -363,6 +422,7 @@ class TrayApp:
     def _quit(self) -> None:
         def worker() -> None:
             try:
+                self.updater.stop()
                 self.streamer.shutdown()
             finally:
                 self.ui.stop()
@@ -404,6 +464,11 @@ class TrayApp:
         for line in self._status_lines():
             yield MenuItem(line, None, enabled=False)
         yield Menu.SEPARATOR
+        yield MenuItem(
+            lambda item: f"更新到 v{self.updater.available.version}…" if self.updater.available else "更新",
+            _call(lambda: threading.Thread(target=self._update_now, daemon=True).start()),
+            visible=lambda item: self.updater.available is not None,
+        )
         yield MenuItem("快捷面板", _call(self.quick.toggle), default=True)
         yield MenuItem("控制面板…", _call(self.panel.show))
         yield MenuItem(
