@@ -63,6 +63,9 @@ def main(argv=None) -> int:
     setup_logging("DEBUG" if args.verbose else config.log_level, console=headless)
 
     if not headless:
+        from .dpi import enable_dpi_awareness
+
+        _LOGGER.info("DPI 感知：%s", enable_dpi_awareness())
         from .tray import run_tray
 
         run_tray()
