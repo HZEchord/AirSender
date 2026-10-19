@@ -366,6 +366,8 @@ class QuickPanel(_PanelBase):
         if self.win is None or not self.win.winfo_exists():
             self._build()
         self._refresh_all()
+        # 開啟時以滑鼠游標（系統匣圖示）位置為錨點，之後刷新都固定在這裡，不跟著滑鼠跑
+        self._anchor = (self.win.winfo_pointerx(), self.win.winfo_pointery())
         self._place()
         self.win.deiconify()
         self.win.lift()
@@ -377,11 +379,11 @@ class QuickPanel(_PanelBase):
             self.win.withdraw()
 
     def _place(self) -> None:
-        """放在滑鼠游標（系統匣圖示）左上方，夾在螢幕範圍內。"""
+        """放在錨點（開啟時的系統匣圖示位置）左上方，夾在螢幕範圍內。"""
         win = self.win
         win.update_idletasks()
         w, h = win.winfo_reqwidth(), win.winfo_reqheight()
-        px, py = win.winfo_pointerx(), win.winfo_pointery()
+        px, py = getattr(self, "_anchor", None) or (win.winfo_pointerx(), win.winfo_pointery())
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         margin = self.ui.px(8)
         x = min(max(px - w, margin), sw - w - margin)
@@ -510,6 +512,7 @@ class QuickPanel(_PanelBase):
         self._vars["status"].set(line)
         self._vars["detail"].set(detail)
         self._sync_from_config()
+        # 內容高度可能改變（例如出現更新列），重新依錨點擺放，位置不變
         self._place()
         self._schedule_tick()
 

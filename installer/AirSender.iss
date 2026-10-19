@@ -1,7 +1,7 @@
 ; Inno Setup 6 安裝腳本。由 build.ps1 呼叫；需先以 PyInstaller 產生 ..\dist\AirSender\。
 
 #define MyAppName "AirSender"
-#define MyAppVersion "0.6.1"
+#define MyAppVersion "0.6.2"
 #define MyAppPublisher "AirSender"
 #define MyAppExeName "AirSender.exe"
 
