@@ -151,6 +151,27 @@ AirSenderCLI.exe --device 客廳 --headless --latency 100 --latency-min 25 --jit
 | 25 | 50 | 20 | 142 ms，出現重播峰值 |
 若電腦接有喇叭，會先看到一個較早的峰值（電腦喇叭），HomePod 的峰值在 100 ms 之後。
 
+## 無損、bit-perfect 與格式轉換的真相
+
+AirPlay 音訊只收 **44.1 kHz / 16-bit**，這是 Apple 接收端的硬限制，任何傳送端都一樣（Apple 自家的 AirPlay 也是）。
+AirSender 在這個限制內做到「不經有損壓縮」，但來源格式若不是 44.1/16 就必須轉換：
+
+| 情況 | AirSender 的處理 | 影響 |
+| --- | --- | --- |
+| Windows 輸出格式 = 44.1 kHz、來源 16-bit、音量 100%、未啟用 EQ | 樣本原樣通過（**bit-perfect**，狀態列會標示） | 無 |
+| Windows 輸出格式 = 44.1 kHz、來源 24-bit 或音量非 100% | 只做 24 → 16-bit 的 TPDF dither | 底噪 −96 dBFS，遠低於房間噪音與 HomePod 自身底噪 |
+| Windows 輸出格式 ≠ 44.1 kHz（例如 DAC 預設 176.4 / 192 kHz） | soxr VHQ 重取樣到 44.1 kHz，再 dither | 22 kHz 以上內容移除（無可聽內容）；重取樣 SNR 約 150 dB |
+
+要注意的是：**Windows 混音器本身**也會把所有來源重取樣到裝置的輸出格式。DAC 設在 176.4 kHz 時，
+44.1 kHz 的音樂先被 Windows 升頻再被 AirSender 降回，等於兩次轉換。想把轉換減到最少：
+
+1. 聲音設定 → 輸出裝置 → 內容 → 進階，把預設格式改為 **44100 Hz**（位元深度選 24 或 16 皆可）。
+2. 此時 44.1 kHz 的來源（CD、Spotify、Apple Music 無損多為 44.1）就是 bit-perfect；48 kHz 的來源（YouTube、遊戲）
+   由 Windows 重取樣一次。
+3. Windows 音量維持 100%，用接收端音量控制大小聲；關閉輸出裝置的「增強」效果。
+
+房間校正與低音增強是刻意的訊號處理，啟用後就不是 bit-perfect，這是取捨而非缺陷。
+
 ## 非 AirPlay 接收端
 
 - **Google Cast / DLNA**：系統匣「接收端」會列出掃到的裝置；選擇後 AirSender 啟動 HTTP 伺服器（預設 port 8765，可在設定檔改 `http_port`）並要接收端來拉 `stream.wav`。這條路徑無損但延遲由接收端預緩衝決定，系統匣會標示。延遲選單對這些裝置無效。

@@ -342,6 +342,8 @@ class _PanelBase:
         cap = st.capture_status
         if st.state == State.STREAMING and cap and cap.running:
             out["source"] = f"{cap.device_name[:28]}  {cap.source_rate} → {cap.target_rate} Hz"
+            if cap.bitperfect_blocks > 0 and cap.bitperfect_blocks >= cap.dithered_blocks:
+                out["source"] += " · bit-perfect"
             src = st.source
             if src is not None:
                 out["buf"] = f"緩衝 {min(src.buffered_ms, 999):>3.0f} ms"

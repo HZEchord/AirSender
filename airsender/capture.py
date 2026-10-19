@@ -36,6 +36,8 @@ class CaptureStatus:
     last_error: str = ""
     overflows: int = 0
     frames_captured: int = field(default=0)
+    bitperfect_blocks: int = 0  # 區塊已是 16-bit 整數值，直接通過（未加 dither）
+    dithered_blocks: int = 0
 
 
 def _co_initialize() -> bool:
@@ -326,12 +328,20 @@ class WasapiLoopbackCapture:
 
         # 以下全為就地運算，避免每個區塊多次配置暫存陣列
         x = x if x.flags.writeable and x.base is None else x.copy()
-        x *= 32767.0
+        # 以 32768 縮放（Windows 混音器把 16-bit 樣本除以 32768 變成 float），
+        # 這樣 16-bit 來源在音量 100%、無重取樣、無 EQ 時能原樣還原（bit-perfect）
+        x *= 32768.0
         if self.dither:
-            # TPDF dither：兩個均勻分布相減（三角分布），幅度 ±1 LSB
-            noise = self._rng.random(x.shape, dtype=np.float32)
-            noise -= self._rng.random(x.shape, dtype=np.float32)
-            x += noise
+            # 已經是 16-bit 整數值的區塊（bit-perfect 路徑）不加 dither，否則會平白加入 ±1 LSB 雜訊
+            frac = np.abs(x - np.rint(x))
+            if frac.max() > 1e-3:
+                # TPDF dither：兩個均勻分布相減（三角分布），幅度 ±1 LSB
+                noise = self._rng.random(x.shape, dtype=np.float32)
+                noise -= self._rng.random(x.shape, dtype=np.float32)
+                x += noise
+                self.status.dithered_blocks += 1
+            else:
+                self.status.bitperfect_blocks += 1
         np.rint(x, out=x)
         np.clip(x, -32768.0, 32767.0, out=x)
         pcm = x.astype("<i2")
