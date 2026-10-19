@@ -18,6 +18,16 @@ from .live_source import LiveAudioSource
 _LOGGER = logging.getLogger(__name__)
 
 _state = {"latency_ms": 1500, "latency_min_ms": 250, "latency_max_ms": 2000, "applied": False}
+_stats = {"retransmit_requests": 0, "retransmit_packets": 0}
+
+
+def reset_stats() -> None:
+    _stats["retransmit_requests"] = 0
+    _stats["retransmit_packets"] = 0
+
+
+def stats() -> dict[str, int]:
+    return dict(_stats)
 
 
 def set_latency_ms(latency_ms: int) -> None:
@@ -80,3 +90,15 @@ def apply() -> None:
         return await original_setup(self, headers=headers, body=body)
 
     RtspSession.setup = patched_setup  # type: ignore[assignment]
+
+    # 4. 統計接收端要求重傳的次數（Wi-Fi 抖動的直接指標）
+    from pyatv.protocols.raop.stream_client import ControlClient  # pylint: disable=import-outside-toplevel
+
+    original_retransmit = ControlClient._retransmit_lost_packets  # pylint: disable=protected-access
+
+    def patched_retransmit(self, request, addr):
+        _stats["retransmit_requests"] += 1
+        _stats["retransmit_packets"] += int(getattr(request, "lost_packets", 1) or 1)
+        return original_retransmit(self, request, addr)
+
+    ControlClient._retransmit_lost_packets = patched_retransmit  # type: ignore[assignment]  # pylint: disable=protected-access

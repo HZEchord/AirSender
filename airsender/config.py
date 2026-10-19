@@ -17,6 +17,7 @@ _LOGGER = logging.getLogger(__name__)
 # 總延遲 ≈ 三者相加 + 約 15 ms。HomePod mini 實測：最低組約 140 ms、低約 255 ms、標準約 500 ms。
 LATENCY_PRESETS: dict[str, tuple[int, int, int]] = {
     "最低（約 140 ms）": (25, 100, 20),
+    "較低（約 220 ms）": (25, 150, 30),
     "低（約 255 ms）": (50, 150, 40),
     "標準（約 500 ms）": (100, 350, 40),
     "高（約 1 s）": (250, 700, 40),

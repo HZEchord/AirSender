@@ -247,6 +247,7 @@ HELP = {
         "緩衝：本機抖動緩衝目前的資料量（目標為設定值）。\n"
         "漂移：可變速率微調量，ppm；緩衝偏離目標時會暫時變大，約一分鐘內收斂。\n"
         "underrun：緩衝空掉補靜音的次數（沒有程式播音時會累計，屬正常）。\n"
+        "重傳：接收端要求重送的封包數，Wi-Fi 抖動的直接指標；持續增加就調高接收端緩衝。\n"
         "溢位：擷取端來不及處理的次數，應為 0。"
     ),
 }
@@ -335,7 +336,7 @@ class _PanelBase:
         title = st.state.value
         if device:
             title += f" → {device.name}（{KIND_LABELS.get(device.kind, device.kind)}）"
-        out = {"title": title, "source": "", "buf": "", "ppm": "", "underrun": "", "overflow": "", "message": ""}
+        out = {"title": title, "source": "", "buf": "", "ppm": "", "underrun": "", "overflow": "", "retx": "", "message": ""}
         if st.message and st.state != State.STREAMING:
             out["message"] = st.message[:60]
         cap = st.capture_status
@@ -347,6 +348,9 @@ class _PanelBase:
                 out["ppm"] = f"漂移 {max(-999, min(999, src.drift_ppm)):>+4.0f} ppm"
                 out["underrun"] = f"underrun {min(src.underruns, 99999):>5d}"
                 out["overflow"] = f"溢位 {min(cap.overflows, 99999):>5d}"
+                from .patches import stats as patch_stats  # pylint: disable=import-outside-toplevel
+
+                out["retx"] = f"重傳 {min(patch_stats()['retransmit_packets'], 99999):>5d}"
             elif st.http.clients:
                 out["source"] = "HTTP 接收端 " + "、".join(st.http.clients)[:40]
         return out
@@ -365,7 +369,7 @@ class _PanelBase:
         v = self._vars
         frame = ttk.Frame(parent)
         frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
-        for key, width in (("buf", 11), ("ppm", 14), ("underrun", 15), ("overflow", 11)):
+        for key, width in (("buf", 11), ("ppm", 14), ("underrun", 15), ("retx", 11), ("overflow", 11)):
             v[f"stat_{key}"] = tk.StringVar()
             ttk.Label(frame, textvariable=v[f"stat_{key}"], style="Mono.TLabel", width=width, anchor="w").pack(side="left")
         help_icon(frame, HELP["stats"], self.ui).pack(side="left", padx=(4, 0))
@@ -378,7 +382,7 @@ class _PanelBase:
         v["status"].set(f["title"])
         if "detail" in v:
             v["detail"].set(f["message"] or f["source"])
-        for key in ("buf", "ppm", "underrun", "overflow"):
+        for key in ("buf", "ppm", "underrun", "retx", "overflow"):
             if f"stat_{key}" in v:
                 v[f"stat_{key}"].set(f[key])
         frame = getattr(self, "_stats_frame", None)
