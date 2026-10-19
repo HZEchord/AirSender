@@ -20,6 +20,8 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any, Optional
 
+import numpy as np
+
 from . import APP_NAME, __version__, autostart
 from .config import DRIFT_MODES, LATENCY_PRESETS, RESAMPLE_QUALITIES, latency_preset_name
 from .sinks import HTTP_PULL_KINDS, KIND_LABELS
@@ -261,6 +263,10 @@ class _PanelBase:
             v["lmin"].set(float(cfg.airplay_latency_min_ms))
         if "preset" in v:
             v["preset"].set(latency_preset_name(cfg))
+        if "bass" in v:
+            v["bass"].set(float(cfg.bass_boost_db))
+            v["strength"].set(float(cfg.correction_strength))
+            v["room_enabled"].set(cfg.room_correction_enabled)
         if "quick_latency" in v:
             v["quick_latency"].set(latency_preset_name(cfg))
         if "drift" in v:
@@ -287,6 +293,9 @@ class _PanelBase:
             v["jitter_label"].set(f"{self._snap(v['jitter'].get(), self.JITTER_STEP)} ms")
         if "lmin_label" in v:
             v["lmin_label"].set(f"{self._snap(v['lmin'].get(), self.LMIN_STEP)} ms")
+        if "bass_label" in v:
+            v["bass_label"].set(f"+{round(v['bass'].get() * 2) / 2:.1f} dB")
+            v["strength_label"].set(f"{int(round(v['strength'].get() / 5) * 5)}%")
 
     def _update_text(self) -> str:
         rel = self.app.updater.available
@@ -683,9 +692,44 @@ class ControlPanel(_PanelBase):
         self._capture_combo.grid(row=2, column=1, columnspan=2, sticky="ew", padx=8, pady=(4, 0))
         self._capture_combo.bind("<<ComboboxSelected>>", self._on_capture_selected)
 
+        # ---- 房間校正 / 低音
+        rf = ttk.LabelFrame(outer, text="房間校正與低音（即時生效，不必重連）", padding=(10, 6))
+        rf.grid(row=6, column=0, sticky="ew", pady=(10, 0))
+        rf.columnconfigure(1, weight=1)
+        v["room_enabled"] = tk.BooleanVar(value=cfg.room_correction_enabled)
+        self._room_check = ttk.Checkbutton(rf, text="啟用房間校正", variable=v["room_enabled"],
+                                           command=lambda: self.app._toggle_room_correction(v["room_enabled"].get()))  # pylint: disable=protected-access
+        self._room_check.grid(row=0, column=0, sticky="w")
+        v["room_status"] = tk.StringVar()
+        ttk.Label(rf, textvariable=v["room_status"], style="Muted.TLabel", wraplength=wrap, justify="left").grid(
+            row=0, column=1, sticky="w", padx=8
+        )
+        self._cal_btn = ttk.Button(rf, text="開始校正…", command=self._start_calibration)
+        self._cal_btn.grid(row=0, column=2, sticky="e")
+        ttk.Label(rf, text="低音增強").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        v["bass"] = tk.DoubleVar(value=float(cfg.bass_boost_db))
+        v["bass_label"] = tk.StringVar()
+        sb = ttk.Scale(rf, from_=0, to=9, variable=v["bass"], command=lambda _v: self._update_labels())
+        sb.grid(row=1, column=1, sticky="ew", padx=8, pady=(4, 0))
+        self._bind_drag(sb)
+        sb.bind("<ButtonRelease-1>", lambda _e: self._apply_bass())
+        ttk.Label(rf, textvariable=v["bass_label"], width=8, anchor="e").grid(row=1, column=2, pady=(4, 0))
+        ttk.Label(rf, text="校正強度").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        v["strength"] = tk.DoubleVar(value=float(cfg.correction_strength))
+        v["strength_label"] = tk.StringVar()
+        ss = ttk.Scale(rf, from_=0, to=100, variable=v["strength"], command=lambda _v: self._update_labels())
+        ss.grid(row=2, column=1, sticky="ew", padx=8, pady=(4, 0))
+        self._bind_drag(ss)
+        ss.bind("<ButtonRelease-1>", lambda _e: self._apply_strength())
+        ttk.Label(rf, textvariable=v["strength_label"], width=8, anchor="e").grid(row=2, column=2, pady=(4, 0))
+        self._curve = tk.Canvas(rf, height=self.ui.px(110), background="#ffffff", highlightthickness=1, highlightbackground="#cccccc")
+        self._curve.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        v["cal_progress"] = tk.StringVar()
+        ttk.Label(rf, textvariable=v["cal_progress"], style="Muted.TLabel").grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
+
         # ---- 更新
         upf = ttk.LabelFrame(outer, text="更新", padding=(10, 6))
-        upf.grid(row=6, column=0, sticky="ew", pady=(10, 0))
+        upf.grid(row=7, column=0, sticky="ew", pady=(10, 0))
         upf.columnconfigure(0, weight=1)
         v["update_text"] = tk.StringVar()
         ttk.Label(upf, textvariable=v["update_text"], wraplength=wrap, justify="left").grid(row=0, column=0, sticky="w")
@@ -705,7 +749,7 @@ class ControlPanel(_PanelBase):
 
         # ---- 選項
         opt = ttk.Frame(outer)
-        opt.grid(row=7, column=0, sticky="ew", pady=(10, 0))
+        opt.grid(row=8, column=0, sticky="ew", pady=(10, 0))
         v["auto_stream"] = tk.BooleanVar(value=cfg.autostart_stream)
         v["auto_win"] = tk.BooleanVar(value=autostart.is_enabled())
         ttk.Checkbutton(opt, text="啟動後自動連線到上次裝置", variable=v["auto_stream"], command=self._on_auto_stream).grid(
@@ -715,7 +759,7 @@ class ControlPanel(_PanelBase):
             row=0, column=1, sticky="w", padx=(12, 0)
         )
         btns = ttk.Frame(outer)
-        btns.grid(row=8, column=0, sticky="ew", pady=(8, 0))
+        btns.grid(row=9, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(btns, text="允許通過 Windows 防火牆", command=self.app._add_firewall_rules).pack(side="left")  # pylint: disable=protected-access
         ttk.Button(btns, text="開啟記錄資料夾", command=self.app._open_logs).pack(side="left", padx=(6, 0))  # pylint: disable=protected-access
         ttk.Button(btns, text="結束 AirSender", command=self.app._quit).pack(side="left", padx=(6, 0))  # pylint: disable=protected-access
@@ -762,6 +806,20 @@ class ControlPanel(_PanelBase):
         else:
             hint = "此種類接收端自行決定緩衝（2–5 秒），延遲設定對它無效。"
         self._vars["latency_hint"].set(hint)
+        from .roomcal import ENGINE, CorrectionProfile  # pylint: disable=import-outside-toplevel
+
+        prof = CorrectionProfile.load()
+        if prof is None:
+            self._vars["room_status"].set("尚未校正；低音增強可直接使用")
+            self._room_check.state(["disabled"])
+        else:
+            self._room_check.state(["!disabled"])
+            self._vars["room_status"].set(
+                f"校正檔 {prof.created}，{prof.positions} 個位置，SNR {prof.snr_db:.0f} dB"
+                + (f"，預先衰減 {ENGINE.pre_gain_db:.1f} dB" if ENGINE.active else "")
+            )
+        self._cal_btn.state(["disabled"] if getattr(self, "_cal_running", False) else ["!disabled"])
+        self._draw_curves()
         from .updater import describe_last_check  # pylint: disable=import-outside-toplevel
 
         busy = self.app._update_busy  # pylint: disable=protected-access
@@ -810,6 +868,78 @@ class ControlPanel(_PanelBase):
     def _rescan(self) -> None:
         self.app._rescan_async()  # pylint: disable=protected-access
         self._fill_device_combo(self._device_combo)
+
+    def _apply_bass(self) -> None:
+        self._dragging = False
+        self.app._set_bass_boost(round(self._vars["bass"].get() * 2) / 2)  # pylint: disable=protected-access
+
+    def _apply_strength(self) -> None:
+        self._dragging = False
+        self.app._set_correction_strength(int(round(self._vars["strength"].get() / 5) * 5))  # pylint: disable=protected-access
+
+    def _start_calibration(self) -> None:
+        from .dialogs import ask_string  # pylint: disable=import-outside-toplevel
+
+        def worker() -> None:
+            answer = ask_string(
+                "房間校正會播放 3 次約 6 秒的掃頻音（音量適中），並用電腦麥克風錄音。\n"
+                "請把麥克風放在你平常聆聽的位置（例如桌上頭部的高度），保持安靜。\n\n"
+                "要量測幾個位置？（1–3；多位置會平均，建議 1 或 2）",
+            )
+            if not answer:
+                return
+            try:
+                positions = max(1, min(3, int(answer.strip())))
+            except ValueError:
+                positions = 1
+            self._cal_running = True
+
+            def progress(msg: str, frac: float) -> None:
+                self.ui.call(lambda: self._vars["cal_progress"].set(f"校正中… {msg}（{frac * 100:.0f}%）"))
+
+            try:
+                self.app._run_calibration(positions, progress)  # pylint: disable=protected-access
+                self.ui.call(lambda: self._vars["cal_progress"].set("校正完成，已啟用。"))
+            except Exception as exc:  # pylint: disable=broad-except
+                message = f"校正失敗：{exc}"
+                self.ui.call(lambda: self._vars["cal_progress"].set(message))
+            finally:
+                self._cal_running = False
+                self.refresh()
+
+        _run_bg(worker)
+
+    def _draw_curves(self) -> None:
+        from .roomcal import ENGINE  # pylint: disable=import-outside-toplevel
+
+        c = self._curve
+        c.delete("all")
+        w = max(c.winfo_width(), 200)
+        h = int(c["height"])
+        curves = ENGINE.curves(self.app.config)
+        freqs = curves["freqs"]
+        f_lo, f_hi, db_range = 30.0, 16000.0, 15.0
+
+        def xy(f, db):
+            x = (np.log10(f) - np.log10(f_lo)) / (np.log10(f_hi) - np.log10(f_lo)) * (w - 2) + 1
+            y = h / 2 - db / db_range * (h / 2 - 2)
+            return x, y
+
+        for f in (50, 100, 200, 500, 1000, 2000, 5000, 10000):
+            x, _ = xy(f, 0)
+            c.create_line(x, 0, x, h, fill="#eeeeee")
+            c.create_text(x + 2, h - 2, text=f"{f if f < 1000 else str(f // 1000) + 'k'}", anchor="sw", fill="#999999", font=(UI_FONT, 7))
+        for db in (-10, -5, 0, 5, 10):
+            _, y = xy(f_lo, db)
+            c.create_line(0, y, w, y, fill="#f0f0f0" if db else "#bbbbbb")
+        mask = (freqs >= f_lo) & (freqs <= f_hi)
+        for key, color, width in (("measured", "#aaaaaa", 1), ("correction", "#e08a00", 1), ("result", "#1f6fd0", 2)):
+            if key not in curves:
+                continue
+            pts = [xy(f, float(np.clip(d, -db_range, db_range))) for f, d in zip(freqs[mask], curves[key][mask], strict=True)]
+            c.create_line(*[v for pt in pts for v in pt], fill=color, width=width, smooth=True)
+        legend = "灰：量測　橘：修正　藍：預估結果" if "measured" in curves else "橘：低音增強曲線（尚未校正）"
+        c.create_text(4, 4, text=legend, anchor="nw", fill="#666666", font=(UI_FONT, 8))
 
     def _on_preset_selected(self, _event=None) -> None:
         name = self._vars["preset"].get()

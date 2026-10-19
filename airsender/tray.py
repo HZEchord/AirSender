@@ -338,6 +338,71 @@ class TrayApp:
     def _toggle_autostart_windows(self) -> None:
         autostart.set_enabled(not autostart.is_enabled())
 
+    # ------------------------------------------------------------ 房間校正 / 低音
+    def _apply_eq(self) -> None:
+        self.config.save()
+        self.streamer.rebuild_eq()
+        self.panel.refresh()
+
+    def _set_bass_boost(self, db: float) -> None:
+        self.config.bass_boost_db = max(0.0, min(9.0, float(db)))
+        self._apply_eq()
+
+    def _set_correction_strength(self, pct: int) -> None:
+        self.config.correction_strength = max(0, min(100, int(pct)))
+        self._apply_eq()
+
+    def _toggle_room_correction(self, enabled: bool) -> None:
+        self.config.room_correction_enabled = bool(enabled)
+        self._apply_eq()
+
+    def _run_calibration(self, positions: int, progress) -> None:
+        """在工作執行緒執行：需要正在串流到 AirPlay 接收端。"""
+        from . import roomcal  # pylint: disable=import-outside-toplevel
+
+        device = self._current_device()
+        if device is None or device.kind != "airplay":
+            raise RuntimeError("請先選擇 AirPlay 接收端")
+        if not self.streamer.is_active:
+            self.streamer.start(device)
+        t0 = time.monotonic()
+        while self.streamer.state != State.STREAMING and time.monotonic() - t0 < 25:
+            time.sleep(0.3)
+        if self.streamer.state != State.STREAMING:
+            raise RuntimeError("串流尚未開始，無法校正")
+        cal = roomcal.Calibrator(self.config)
+        roomcal.ENGINE.bypass = True
+        try:
+            time.sleep(1.0)
+            dbs = []
+            snrs = []
+            lats = []
+            for pos in range(positions):
+                if positions > 1:
+                    dialogs.show_info(f"請把麥克風放到第 {pos + 1}/{positions} 個聆聽位置，按確定開始量測")
+                d, snr, lat = cal.measure_position(lambda msg, frac, pos=pos: progress(f"位置 {pos + 1}/{positions}：{msg}", (pos + frac) / positions))
+                dbs.append(d)
+                snrs.append(snr)
+                lats.append(lat)
+            mic_cal = roomcal.load_mic_calibration(self.config.mic_calibration_file)
+            measured = cal.finalize(dbs, mic_cal=mic_cal)
+            profile = roomcal.CorrectionProfile(
+                created=time.strftime("%Y-%m-%d %H:%M"),
+                positions=positions,
+                sweeps=cal.sweeps,
+                device_name=device.name,
+                mic_name="",
+                measured_db=[float(v) for v in measured],
+                snr_db=float(sum(snrs) / len(snrs)),
+                latency_ms=float(sum(lats) / len(lats)),
+            )
+            profile.save()
+            self.config.room_correction_enabled = True
+            self._apply_eq()
+            progress(f"完成：SNR {profile.snr_db:.0f} dB，延遲 {profile.latency_ms:.0f} ms", 1.0)
+        finally:
+            roomcal.ENGINE.bypass = False
+
     # ------------------------------------------------------------ 更新
     def _on_update_available(self, release: Release) -> None:
         self._notify(f"有新版本 v{release.version}，開啟快捷面板或控制面板按「更新」")

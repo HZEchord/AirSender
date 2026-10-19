@@ -96,6 +96,7 @@ class WasapiLoopbackCapture:
         block_ms: int = 10,
         variable_rate: bool = False,
         rate_adjust: Optional[Callable[[], float]] = None,
+        processor: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     ) -> None:
         """variable_rate=True 時改用 soxr 可變速率模式，每個區塊以 rate_adjust() 回傳的
         比例（例如 +0.0005 = 輸入視為快 0.05%）微調，用來吸收擷取端與傳送端的時鐘漂移。"""
@@ -109,6 +110,7 @@ class WasapiLoopbackCapture:
         self.block_ms = block_ms
         self.variable_rate = variable_rate
         self.rate_adjust = rate_adjust
+        self.processor = processor  # 房間校正 / 低音增強（在目標取樣率上、dither 之前）
         self.status = CaptureStatus(target_rate=target_rate)
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -318,6 +320,9 @@ class WasapiLoopbackCapture:
             x = drift_stage.resample_chunk(x)
             if x.size == 0:
                 return
+
+        if self.processor is not None:
+            x = self.processor(x)
 
         # 以下全為就地運算，避免每個區塊多次配置暫存陣列
         x = x if x.flags.writeable and x.base is None else x.copy()

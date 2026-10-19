@@ -21,7 +21,7 @@ import pyatv
 from pyatv.const import Protocol
 from pyatv.interface import MediaMetadata
 
-from . import APP_NAME, firewall, pairing, patches
+from . import APP_NAME, firewall, pairing, patches, roomcal
 from .capture import CaptureStatus
 from .config import Config
 from .httpstream import HttpStreamServer, PcmBroadcaster
@@ -114,7 +114,12 @@ class Streamer:
         fut = asyncio.run_coroutine_threadsafe(self._scan(timeout), self._loop)
         return fut.result(timeout + 20)
 
+    def rebuild_eq(self) -> None:
+        """依目前設定重建房間校正 / 低音增強 EQ（串流中即時生效，不必重連）。"""
+        roomcal.ENGINE.rebuild(self.config)
+
     def start(self, device: Device) -> None:
+        self.rebuild_eq()
         self.device = device
         self.config.device_identifier = device.identifier
         self.config.device_name = device.name

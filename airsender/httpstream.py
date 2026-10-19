@@ -21,6 +21,7 @@ from aiohttp import web
 from . import APP_NAME, __version__
 from .capture import WasapiLoopbackCapture
 from .config import Config
+from .roomcal import ENGINE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ class PcmBroadcaster:
                 quality=self.config.resample_quality,
                 dither=self.config.dither,
                 variable_rate=False,
+                processor=ENGINE.process,
             )
             self.capture.start()
             _LOGGER.info("HTTP 串流：開始擷取")

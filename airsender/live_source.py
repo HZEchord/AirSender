@@ -19,6 +19,7 @@ from pyatv.protocols.raop.audio_source import AudioSource, _to_audio_samples
 
 from .capture import WasapiLoopbackCapture
 from .ringbuffer import ByteRingBuffer
+from .roomcal import ENGINE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ class LiveAudioSource(AudioSource):
             dither=self._dither,
             variable_rate=self._smooth,
             rate_adjust=lambda: self.drift.adjustment,
+            processor=ENGINE.process,
         )
         self.drift.reset()
         self.capture.start()

@@ -83,6 +83,15 @@ class Config:
     # "trim" = 固定比率 VHQ，緩衝超過高水位時一次裁掉（偶發小跳音）
     drift_compensation: str = "smooth"
 
+    # 房間校正 / 低音增強（校正檔存於 room_correction.json）
+    room_correction_enabled: bool = False
+    bass_boost_db: float = 0.0  # 低架增益 0–9 dB（100 Hz 以下）
+    correction_strength: int = 100  # 套用量測修正的百分比
+    correction_max_boost_db: float = 6.0
+    correction_f_low: int = 40
+    correction_f_high: int = 10000
+    mic_calibration_file: str = ""  # 可選：REW 格式麥克風校正檔
+
     # 自動更新
     update_check_days: int = 0  # 每幾天查一次 GitHub Releases；0 = 不檢查（預設關閉，需要的人自行開啟）
     last_update_check: str = ""  # ISO 時間
