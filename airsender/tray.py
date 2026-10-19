@@ -19,6 +19,7 @@ from .capture import list_loopback_devices
 from .config import DRIFT_MODES, LATENCY_PRESETS, RESAMPLE_QUALITIES, Config, log_dir
 from .sinks import HTTP_PULL_KINDS, KIND_LABELS
 from .streamer import Device, State, Streamer
+from .ui import ControlPanel, UiThread
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +64,8 @@ class TrayApp:
         self._scanning = False
         self._last_notify = 0.0
         self.streamer = Streamer(self.config, self._on_state)
+        self.ui = UiThread()
+        self.panel = ControlPanel(self.ui, self)
         self.icon = pystray.Icon(
             APP_NAME, make_icon_image(False), APP_NAME, menu=Menu(self._menu_items)
         )
@@ -70,10 +73,13 @@ class TrayApp:
     # ------------------------------------------------------------ 執行
     def run(self) -> None:
         self.streamer.start_loop()
+        self.ui.start()
+        dialogs.set_ui_thread(self.ui)
         try:
             self.icon.run(setup=self._setup)
         finally:
             self.streamer.shutdown()
+            self.ui.stop()
 
     def _setup(self, icon: pystray.Icon) -> None:
         icon.visible = True
@@ -100,6 +106,7 @@ class TrayApp:
             self._last_notify = time.monotonic()
             self._notify(message or "連線中斷，重新連線中")
         self._update_menu()
+        self.panel.refresh()
 
     def _notify(self, message: str, title: str = APP_NAME) -> None:
         try:
@@ -113,21 +120,23 @@ class TrayApp:
         except Exception:  # pylint: disable=broad-except
             pass
 
-    def _status_text(self) -> str:
-        text = f"狀態：{self.streamer.state.value}"
-        if self.streamer.message:
-            text += f" - {self.streamer.message}"
-        if self.streamer.device:
-            text += f"\n接收端：{KIND_LABELS.get(self.streamer.device.kind, self.streamer.device.kind)}"
-        cap = self.streamer.capture_status
-        if self.streamer.state == State.STREAMING and cap and cap.running:
-            text += f"\n來源：{cap.device_name} {cap.source_rate} Hz -> {cap.target_rate} Hz"
-            src = self.streamer.source
+    def _status_lines(self) -> list[str]:
+        """右鍵選單頂端的狀態（Win32 選單不支援換行，所以拆成多個項目）。"""
+        st = self.streamer
+        first = f"狀態：{st.state.value}"
+        if st.device:
+            first += f" → {st.device.name}（{KIND_LABELS.get(st.device.kind, st.device.kind)}）"
+        lines = [first]
+        if st.message and st.state != State.STREAMING:
+            lines.append(st.message[:70])
+        cap = st.capture_status
+        if st.state == State.STREAMING and cap and cap.running:
+            src = st.source
             if src is not None:
-                text += f"\n本機緩衝 {src.buffered_ms:.0f} ms，漂移補償 {src.drift_ppm:+.0f} ppm"
-            elif self.streamer.http.clients:
-                text += f"\nHTTP 接收端：{', '.join(self.streamer.http.clients)}"
-        return text
+                lines.append(f"緩衝 {src.buffered_ms:.0f} ms　漂移 {src.drift_ppm:+.0f} ppm　{cap.source_rate} → {cap.target_rate} Hz")
+            elif st.http.clients:
+                lines.append("HTTP 接收端：" + "、".join(st.http.clients))
+        return lines
 
     # ------------------------------------------------------------ 掃描
     def _rescan_async(self, then_autostart: bool = False) -> None:
@@ -161,6 +170,7 @@ class TrayApp:
             finally:
                 self._scanning = False
                 self._update_menu()
+                self.panel.refresh()
 
         threading.Thread(target=worker, name="scan", daemon=True).start()
 
@@ -352,6 +362,7 @@ class TrayApp:
             try:
                 self.streamer.shutdown()
             finally:
+                self.ui.stop()
                 self.icon.stop()
 
         threading.Thread(target=worker, daemon=True).start()
@@ -482,12 +493,13 @@ class TrayApp:
         yield MenuItem("HomePod 不需要配對；Apple TV 開啟「需要裝置驗證」或第三方接收端設了密碼時才需要", None, enabled=False)
 
     def _menu_items(self):
-        yield MenuItem(lambda item: self._status_text(), None, enabled=False)
+        for line in self._status_lines():
+            yield MenuItem(line, None, enabled=False)
         yield Menu.SEPARATOR
+        yield MenuItem("開啟控制面板…", _call(self.panel.show), default=True)
         yield MenuItem(
             lambda item: "停止串流" if self.streamer.is_active else "開始串流",
             lambda icon, item: self._toggle_stream(),
-            default=True,
         )
         yield MenuItem(
             "重新連線",

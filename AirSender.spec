@@ -13,6 +13,7 @@ hidden = (
     + [
         "pystray._win32",
         "PIL.ImageDraw",
+        "PIL.ImageTk",
         "soxr",
         "pyaudiowpatch",
         "miniaudio",

@@ -1,21 +1,29 @@
-"""簡單的 Windows 對話框（tkinter），供系統匣程式詢問 PIN / 密碼。
+"""簡單的對話框（PIN / 密碼輸入、訊息）。
 
-tkinter 只能在建立它的執行緒使用；這裡每次呼叫都在目前執行緒建立並銷毀一個隱藏的根視窗，
-所以可以從系統匣的工作執行緒安全呼叫。
+系統匣程式執行時會註冊 UiThread，所有對話框在該執行緒顯示；
+沒有 UiThread（命令列工具）時，就在目前執行緒建立並銷毀一個暫時的 Tk 根視窗。
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from . import APP_NAME
 
 _LOGGER = logging.getLogger(__name__)
+_ui: Any = None
+
+
+def set_ui_thread(ui: Any) -> None:
+    global _ui  # pylint: disable=global-statement
+    _ui = ui
 
 
 def ask_string(prompt: str, title: str = APP_NAME, *, secret: bool = False) -> Optional[str]:
     """跳出輸入框；取消時回傳 None。"""
+    if _ui is not None:
+        return _ui.ask_string(prompt, title, secret=secret)
     try:
         import tkinter as tk  # pylint: disable=import-outside-toplevel
         from tkinter import simpledialog  # pylint: disable=import-outside-toplevel
@@ -27,14 +35,15 @@ def ask_string(prompt: str, title: str = APP_NAME, *, secret: bool = False) -> O
     root.withdraw()
     root.attributes("-topmost", True)
     try:
-        return simpledialog.askstring(
-            title, prompt, parent=root, show="*" if secret else None
-        )
+        return simpledialog.askstring(title, prompt, parent=root, show="*" if secret else None)
     finally:
         root.destroy()
 
 
 def show_info(message: str, title: str = APP_NAME) -> None:
+    if _ui is not None:
+        _ui.show_info(message, title)
+        return
     try:
         import tkinter as tk  # pylint: disable=import-outside-toplevel
         from tkinter import messagebox  # pylint: disable=import-outside-toplevel
