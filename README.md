@@ -38,6 +38,18 @@ HomePod 的麥克風只供它自己（Siri、內建房間自適應）使用，Ap
 3. 安裝時可勾選「登入 Windows 時自動啟動」
 4. 若選擇了非管理員安裝，之後可在系統匣選單選「允許通過 Windows 防火牆」補上規則（會跳 UAC）
 
+### 解除安裝
+
+「設定 → 應用程式」移除 AirSender。解除安裝程式會：結束執行中的程式、刪除安裝目錄、開始功能表與桌面捷徑、
+登入自動啟動的登錄值、Windows 防火牆規則，最後詢問是否一併刪除設定檔（`%APPDATA%\AirSender`）
+與記錄（`%LOCALAPPDATA%\AirSender`）。選「是」即不留任何檔案；選「否」保留設定供日後重裝沿用。
+
+靜默解除安裝並清除使用者資料：
+
+```bash
+"C:\Program Files\AirSender\unins000.exe" /VERYSILENT /REMOVEUSERDATA=1
+```
+
 ### 方法二：從原始碼執行
 
 需要 Python 3.10 以上（開發環境為 3.13）。

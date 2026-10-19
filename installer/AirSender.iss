@@ -1,7 +1,7 @@
 ; Inno Setup 6 安裝腳本。由 build.ps1 呼叫；需先以 PyInstaller 產生 ..\dist\AirSender\。
 
 #define MyAppName "AirSender"
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "0.3.1"
 #define MyAppPublisher "AirSender"
 #define MyAppExeName "AirSender.exe"
 
@@ -59,5 +59,38 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{
 Filename: "{app}\{#MyAppExeName}"; Description: "啟動 {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExeName} /F"; Flags: runhidden; RunOnceId: "KillApp"
+Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExeName} /F & taskkill /IM AirSenderCLI.exe /F"; Flags: runhidden; RunOnceId: "KillApp"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#MyAppName}"""; Flags: runhidden; RunOnceId: "FwDelete"; Check: IsAdminInstallMode
+
+[UninstallDelete]
+; PyInstaller 執行期可能在 _internal 產生快取；連同安裝目錄整個清掉
+Type: filesandordirs; Name: "{app}\_internal"
+Type: dirifempty; Name: "{app}"
+
+[Code]
+// 解除安裝結束時詢問是否一併刪除使用者資料（設定檔與記錄）。
+// 靜默解除安裝（/SILENT、/VERYSILENT）不詢問也不刪除，除非加上 /REMOVEUSERDATA=1。
+function ShouldRemoveUserData(): Boolean;
+begin
+  if UninstallSilent then
+    Result := ExpandConstant('{param:REMOVEUSERDATA|0}') = '1'
+  else
+    Result := MsgBox(
+      '是否一併刪除 AirSender 的設定檔與記錄檔？' + #13#10 + #13#10 +
+      ExpandConstant('{userappdata}\{#MyAppName}') + #13#10 +
+      ExpandConstant('{localappdata}\{#MyAppName}') + #13#10 + #13#10 +
+      '選「否」會保留設定，之後重新安裝可沿用。',
+      mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    if ShouldRemoveUserData() then
+    begin
+      DelTree(ExpandConstant('{userappdata}\{#MyAppName}'), True, True, True);
+      DelTree(ExpandConstant('{localappdata}\{#MyAppName}'), True, True, True);
+    end;
+  end;
+end;
