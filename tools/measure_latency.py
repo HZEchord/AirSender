@@ -144,6 +144,7 @@ def main() -> int:
     ap.add_argument("--device", default="", help="接收端名稱（部分比對），預設第一台 HomePod")
     ap.add_argument("--latency", type=int, default=250, help="接收端緩衝 ms")
     ap.add_argument("--jitter", type=int, default=40, help="本機抖動緩衝 ms")
+    ap.add_argument("--latency-min", type=int, default=250, help="AirPlay 2 SETUP latencyMin ms（pyatv 預設 250）")
     ap.add_argument("--volume", type=int, default=15, help="測試時 HomePod 音量 %%（預設 15，請勿太大）")
     ap.add_argument("--amp", type=float, default=0.3, help="測試音振幅（0–1，預設 0.3）")
     ap.add_argument("--repeats", type=int, default=5)
@@ -157,6 +158,7 @@ def main() -> int:
     cfg = Config()
     cfg.receiver_latency_ms = args.latency
     cfg.jitter_buffer_ms = args.jitter
+    cfg.airplay_latency_min_ms = args.latency_min
     cfg.volume = args.volume
 
     streamer = AirPlayStreamer(cfg, lambda s, m: print(f"  [{s.value}] {m}", flush=True), persist=False)
@@ -172,7 +174,7 @@ def main() -> int:
         target = next((d for d in devices if key and (key in d.name.lower() or key == d.address)), None)
         if target is None:
             target = next((d for d in devices if "HomePod" in d.model or "AudioAccessory" in d.model), devices[0])
-        print(f"目標：{target.label}，接收端緩衝 {args.latency} ms，HomePod 音量 {args.volume}%")
+        print(f"目標：{target.label}，接收端緩衝 {args.latency} ms，latencyMin {args.latency_min} ms，HomePod 音量 {args.volume}%")
 
         streamer.start(target)
         deadline = time.monotonic() + 20

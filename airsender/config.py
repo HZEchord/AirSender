@@ -13,17 +13,16 @@ from . import APP_NAME
 
 _LOGGER = logging.getLogger(__name__)
 
-# 選單顯示名稱 -> 接收端緩衝（毫秒）。這是 AirPlay 接收端「收到封包後等多久才播」的時間，
-# 是整體延遲的主要來源。設太低時 HomePod 會因封包來不及到而出現斷音或靜音。
-LATENCY_PRESETS: dict[str, int] = {
-    "實驗性 (100 ms，HomePod 會斷音)": 100,
-    "最低 (150 ms)": 150,
-    "極低 (250 ms)": 250,
-    "低 (500 ms)": 500,
-    "中 (1000 ms)": 1000,
-    "標準 (1500 ms)": 1500,
-    "高 (2000 ms)": 2000,
+# AirPlay 延遲預設組：名稱 -> (HomePod 最小緩衝 latencyMin, 接收端緩衝, 本機抖動緩衝)，單位 ms。
+# 總延遲 ≈ 三者相加 + 約 15 ms。HomePod mini 實測：最低組約 140 ms、低約 255 ms、標準約 500 ms。
+LATENCY_PRESETS: dict[str, tuple[int, int, int]] = {
+    "最低（約 140 ms）": (25, 100, 20),
+    "低（約 255 ms）": (50, 150, 40),
+    "標準（約 500 ms）": (100, 350, 40),
+    "高（約 1 s）": (250, 700, 40),
+    "最穩（約 2 s）": (250, 1700, 80),
 }
+DEFAULT_LATENCY_PRESET = "低（約 255 ms）"
 
 DRIFT_MODES: dict[str, str] = {
     "平滑：可變速率微調（建議）": "smooth",
@@ -73,7 +72,8 @@ class Config:
     snapcast_servers: list[str] = field(default_factory=list)  # "host" 或 "host:port"
 
     # 延遲相關
-    receiver_latency_ms: int = 500  # 接收端緩衝
+    receiver_latency_ms: int = 150  # 接收端緩衝（RTP 時間戳提前量）
+    airplay_latency_min_ms: int = 50  # AirPlay 2 SETUP 的 latencyMin（HomePod 最小緩衝；pyatv 原本寫死 250）
     jitter_buffer_ms: int = 40  # 本機抖動緩衝（擷取 -> 傳送之間）
 
     # 音質相關
@@ -84,7 +84,7 @@ class Config:
     drift_compensation: str = "smooth"
 
     # 自動更新
-    update_check_days: int = 10  # 每幾天查一次 GitHub Releases（0 = 不檢查）
+    update_check_days: int = 30  # 每幾天查一次 GitHub Releases（0 = 不檢查）
     last_update_check: str = ""  # ISO 時間
     update_skip_version: str = ""  # 使用者選擇略過的版本
 
@@ -115,3 +115,12 @@ class Config:
             )
         except OSError as exc:
             _LOGGER.warning("無法寫入設定檔 %s：%s", path, exc)
+
+
+def latency_preset_name(cfg: Config) -> str:
+    """目前設定對應的預設組名稱；不吻合任何組時回傳「自訂」。"""
+    current = (cfg.airplay_latency_min_ms, cfg.receiver_latency_ms, cfg.jitter_buffer_ms)
+    for name, values in LATENCY_PRESETS.items():
+        if values == current:
+            return name
+    return "自訂"

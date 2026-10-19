@@ -26,8 +26,9 @@ def _parse_args(argv):
     parser.add_argument("--device", help="接收端名稱（部分比對）或 IP")
     parser.add_argument("--snapcast", metavar="HOST[:PORT]", help="直接推送到 snapserver 的 tcp 來源（預設 port 4953）")
     parser.add_argument("--headless", action="store_true", help="不顯示系統匣，直接串流")
-    parser.add_argument("--latency", type=int, help="接收端緩衝毫秒數（例如 250、500、1500）")
+    parser.add_argument("--latency", type=int, help="接收端緩衝毫秒數（100–2000，預設 150）")
     parser.add_argument("--jitter", type=int, help="本機抖動緩衝毫秒數（預設 40）")
+    parser.add_argument("--latency-min", type=int, dest="latency_min", help="HomePod 最小緩衝（AirPlay 2 latencyMin）毫秒數，25–250（預設 50）")
     parser.add_argument("--volume", type=int, help="接收端音量 0-100")
     parser.add_argument("--no-dither", action="store_true", help="關閉 TPDF dither")
     parser.add_argument("--quality", choices=["VHQ", "HQ", "MQ"], help="重取樣品質")
@@ -45,6 +46,8 @@ def _apply_overrides(config: Config, args) -> None:
         config.receiver_latency_ms = args.latency
     if args.jitter is not None:
         config.jitter_buffer_ms = args.jitter
+    if args.latency_min is not None:
+        config.airplay_latency_min_ms = args.latency_min
     if args.volume is not None:
         config.volume = args.volume
     if args.no_dither:

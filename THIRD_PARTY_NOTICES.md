@@ -22,7 +22,9 @@ AirSender 本身以 MIT 授權釋出（見 LICENSE）。打包版（`dist\AirSen
 | PyInstaller（建置工具，執行階段只含 bootloader） | 打包 | GPL-2.0 with Bootloader Exception | https://pyinstaller.org/ |
 | Inno Setup（建置工具） | 安裝程式 | Inno Setup License | https://jrsoftware.org/ |
 
-## LGPL 元件的注意事項（對想商業販售的散佈者）
+## LGPL 元件的注意事項
+
+AirSender 本身免費公開、不販售，以下說明供任何再散佈者參考。
 
 python-soxr（libsoxr）、pystray、python-zeroconf 為 LGPL。LGPL 允許在閉源 / 商業軟體中使用，但散佈時須：
 

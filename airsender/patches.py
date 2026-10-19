@@ -17,7 +17,7 @@ from .live_source import LiveAudioSource
 
 _LOGGER = logging.getLogger(__name__)
 
-_state = {"latency_ms": 1500, "applied": False}
+_state = {"latency_ms": 1500, "latency_min_ms": 250, "latency_max_ms": 2000, "applied": False}
 
 
 def set_latency_ms(latency_ms: int) -> None:
@@ -26,6 +26,13 @@ def set_latency_ms(latency_ms: int) -> None:
 
 def latency_frames(sample_rate: int) -> int:
     return int(sample_rate * _state["latency_ms"] / 1000)
+
+
+def set_latency_min_ms(latency_min_ms: int) -> None:
+    """AirPlay 2 SETUP 的 latencyMin（pyatv 寫死 11025 frames = 250 ms）。
+
+    接收端可能以此決定最低緩衝量；降低它是壓縮總延遲的實驗旋鈕。"""
+    _state["latency_min_ms"] = max(10, min(int(latency_min_ms), 2000))
 
 
 def apply() -> None:
@@ -54,3 +61,22 @@ def apply() -> None:
         )
 
     StreamContext.reset = patched_reset  # type: ignore[assignment]
+
+    # 3. RTSP SETUP：把 AirPlay 2 串流描述裡的 latencyMin / latencyMax 換成可設定的值
+    from pyatv.support.rtsp import RtspSession  # pylint: disable=import-outside-toplevel
+
+    original_setup = RtspSession.setup
+
+    async def patched_setup(self, headers=None, body=None):
+        if isinstance(body, dict) and body.get("streams"):
+            stream = body["streams"][0]
+            if "latencyMin" in stream:
+                sample_rate = int(stream.get("sr", 44100))
+                stream["latencyMin"] = int(sample_rate * _state["latency_min_ms"] / 1000)
+                stream["latencyMax"] = max(
+                    stream["latencyMin"], int(sample_rate * _state["latency_max_ms"] / 1000)
+                )
+                _LOGGER.debug("SETUP latencyMin=%d latencyMax=%d frames", stream["latencyMin"], stream["latencyMax"])
+        return await original_setup(self, headers=headers, body=body)
+
+    RtspSession.setup = patched_setup  # type: ignore[assignment]

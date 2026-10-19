@@ -384,6 +384,7 @@ class Streamer:
         pairing.apply_credentials(conf, self.config.credentials.get(device.identifier, {}))
 
         patches.set_latency_ms(self.config.receiver_latency_ms)
+        patches.set_latency_min_ms(self.config.airplay_latency_min_ms)
         atv = await pyatv.connect(conf, self._loop, protocol=Protocol.RAOP)
         self._atv = atv
         try:

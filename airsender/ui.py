@@ -21,7 +21,7 @@ from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any, Optional
 
 from . import APP_NAME, __version__, autostart
-from .config import DRIFT_MODES, RESAMPLE_QUALITIES
+from .config import DRIFT_MODES, LATENCY_PRESETS, RESAMPLE_QUALITIES, latency_preset_name
 from .sinks import HTTP_PULL_KINDS, KIND_LABELS
 from .streamer_types import State
 
@@ -31,7 +31,6 @@ if TYPE_CHECKING:  # pragma: no cover
 _LOGGER = logging.getLogger(__name__)
 
 UI_FONT = "Microsoft JhengHei UI"
-QUICK_LATENCIES = (150, 250, 500, 1000)
 
 
 class UiThread:
@@ -150,6 +149,7 @@ class _PanelBase:
 
     LATENCY_MIN, LATENCY_MAX, LATENCY_STEP = 100, 2000, 50
     JITTER_MIN, JITTER_MAX, JITTER_STEP = 10, 150, 5
+    LMIN_MIN, LMIN_MAX, LMIN_STEP = 10, 250, 5
 
     def __init__(self, ui: UiThread, app: TrayApp) -> None:
         self.ui = ui
@@ -250,8 +250,12 @@ class _PanelBase:
             v["latency"].set(float(cfg.receiver_latency_ms))
         if "jitter" in v:
             v["jitter"].set(float(cfg.jitter_buffer_ms))
+        if "lmin" in v:
+            v["lmin"].set(float(cfg.airplay_latency_min_ms))
+        if "preset" in v:
+            v["preset"].set(latency_preset_name(cfg))
         if "quick_latency" in v:
-            v["quick_latency"].set(cfg.receiver_latency_ms)
+            v["quick_latency"].set(latency_preset_name(cfg))
         if "drift" in v:
             v["drift"].set(cfg.drift_compensation)
         if "quality" in v:
@@ -274,6 +278,8 @@ class _PanelBase:
             v["latency_label"].set(f"{self._snap(v['latency'].get(), self.LATENCY_STEP)} ms")
         if "jitter_label" in v:
             v["jitter_label"].set(f"{self._snap(v['jitter'].get(), self.JITTER_STEP)} ms")
+        if "lmin_label" in v:
+            v["lmin_label"].set(f"{self._snap(v['lmin'].get(), self.LMIN_STEP)} ms")
 
     def _update_text(self) -> str:
         rel = self.app.updater.available
@@ -317,6 +323,14 @@ class _PanelBase:
         else:
             self._apply_volume()
 
+    def _apply_preset(self, name: str) -> None:
+        lmin, lat, jit = LATENCY_PRESETS[name]
+        cfg = self.app.config
+        if (lmin, lat, jit) != (cfg.airplay_latency_min_ms, cfg.receiver_latency_ms, cfg.jitter_buffer_ms):
+            cfg.airplay_latency_min_ms, cfg.receiver_latency_ms, cfg.jitter_buffer_ms = lmin, lat, jit
+            self.app._apply_and_restart()  # pylint: disable=protected-access
+        self._sync_from_config()
+
     def _apply_latency(self, latency: Optional[int] = None, jitter: Optional[int] = None) -> None:
         self._dragging = False
         cfg = self.app.config
@@ -324,9 +338,11 @@ class _PanelBase:
         jit = jitter if jitter is not None else (
             self._snap(self._vars["jitter"].get(), self.JITTER_STEP) if "jitter" in self._vars else cfg.jitter_buffer_ms
         )
-        if lat != cfg.receiver_latency_ms or jit != cfg.jitter_buffer_ms:
+        lmin = self._snap(self._vars["lmin"].get(), self.LMIN_STEP) if "lmin" in self._vars else cfg.airplay_latency_min_ms
+        if lat != cfg.receiver_latency_ms or jit != cfg.jitter_buffer_ms or lmin != cfg.airplay_latency_min_ms:
             cfg.receiver_latency_ms = lat
             cfg.jitter_buffer_ms = jit
+            cfg.airplay_latency_min_ms = lmin
             self.app._apply_and_restart()  # pylint: disable=protected-access
         self._sync_from_config()
 
@@ -426,15 +442,15 @@ class QuickPanel(_PanelBase):
         ttk.Label(outer, text="延遲").grid(row=5, column=0, sticky="w", pady=(8, 0))
         seg = ttk.Frame(outer)
         seg.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
-        v["quick_latency"] = tk.IntVar(value=cfg.receiver_latency_ms)
-        for ms in QUICK_LATENCIES:
+        v["quick_latency"] = tk.StringVar(value=latency_preset_name(cfg))
+        for name in LATENCY_PRESETS:
             ttk.Radiobutton(
                 seg,
-                text=f"{ms} ms",
-                value=ms,
+                text=name.split("（")[0],
+                value=name,
                 variable=v["quick_latency"],
                 style="Seg.Toolbutton",
-                command=lambda m=ms: self._apply_latency(latency=m),
+                command=lambda n=name: self._apply_preset(n),
             ).pack(side="left", padx=(0, 4))
 
         v["update_text"] = tk.StringVar()
@@ -599,25 +615,38 @@ class ControlPanel(_PanelBase):
         latf = ttk.LabelFrame(outer, text="延遲（放開滑桿後套用，會重新連線）", padding=(10, 6))
         latf.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         latf.columnconfigure(1, weight=1)
+        v["preset"] = tk.StringVar(value=latency_preset_name(cfg))
+        ttk.Label(latf, text="預設組").grid(row=0, column=0, sticky="w")
+        pc = ttk.Combobox(latf, textvariable=v["preset"], state="readonly", values=list(LATENCY_PRESETS) + ["自訂"], width=22)
+        pc.grid(row=0, column=1, sticky="w", padx=8)
+        pc.bind("<<ComboboxSelected>>", self._on_preset_selected)
         v["latency"] = tk.DoubleVar(value=float(cfg.receiver_latency_ms))
         v["latency_label"] = tk.StringVar()
-        ttk.Label(latf, text="接收端緩衝").grid(row=0, column=0, sticky="w")
+        ttk.Label(latf, text="接收端緩衝").grid(row=1, column=0, sticky="w", pady=(4, 0))
         s = ttk.Scale(latf, from_=self.LATENCY_MIN, to=self.LATENCY_MAX, variable=v["latency"], command=lambda _v: self._update_labels())
-        s.grid(row=0, column=1, sticky="ew", padx=8)
+        s.grid(row=1, column=1, sticky="ew", padx=8, pady=(4, 0))
         self._bind_drag(s)
         s.bind("<ButtonRelease-1>", lambda _e: self._apply_latency())
-        ttk.Label(latf, textvariable=v["latency_label"], width=8, anchor="e").grid(row=0, column=2)
+        ttk.Label(latf, textvariable=v["latency_label"], width=8, anchor="e").grid(row=1, column=2, pady=(4, 0))
         v["jitter"] = tk.DoubleVar(value=float(cfg.jitter_buffer_ms))
         v["jitter_label"] = tk.StringVar()
-        ttk.Label(latf, text="本機抖動緩衝").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(latf, text="本機抖動緩衝").grid(row=2, column=0, sticky="w", pady=(4, 0))
         s2 = ttk.Scale(latf, from_=self.JITTER_MIN, to=self.JITTER_MAX, variable=v["jitter"], command=lambda _v: self._update_labels())
-        s2.grid(row=1, column=1, sticky="ew", padx=8, pady=(4, 0))
+        s2.grid(row=2, column=1, sticky="ew", padx=8, pady=(4, 0))
         self._bind_drag(s2)
         s2.bind("<ButtonRelease-1>", lambda _e: self._apply_latency())
-        ttk.Label(latf, textvariable=v["jitter_label"], width=8, anchor="e").grid(row=1, column=2, pady=(4, 0))
+        ttk.Label(latf, textvariable=v["jitter_label"], width=8, anchor="e").grid(row=2, column=2, pady=(4, 0))
+        v["lmin"] = tk.DoubleVar(value=float(cfg.airplay_latency_min_ms))
+        v["lmin_label"] = tk.StringVar()
+        ttk.Label(latf, text="HomePod 最小緩衝").grid(row=3, column=0, sticky="w", pady=(4, 0))
+        s3 = ttk.Scale(latf, from_=self.LMIN_MIN, to=self.LMIN_MAX, variable=v["lmin"], command=lambda _v: self._update_labels())
+        s3.grid(row=3, column=1, sticky="ew", padx=8, pady=(4, 0))
+        self._bind_drag(s3)
+        s3.bind("<ButtonRelease-1>", lambda _e: self._apply_latency())
+        ttk.Label(latf, textvariable=v["lmin_label"], width=8, anchor="e").grid(row=3, column=2, pady=(4, 0))
         v["latency_hint"] = tk.StringVar()
         ttk.Label(latf, textvariable=v["latency_hint"], style="Muted.TLabel", wraplength=wrap, justify="left").grid(
-            row=2, column=0, columnspan=3, sticky="w", pady=(4, 0)
+            row=4, column=0, columnspan=3, sticky="w", pady=(4, 0)
         )
 
         # ---- 音質與來源
@@ -713,9 +742,12 @@ class ControlPanel(_PanelBase):
         if device is None:
             hint = "請先選擇接收端。"
         elif is_airplay:
+            cfg = self.app.config
+            est = cfg.airplay_latency_min_ms + cfg.receiver_latency_ms + cfg.jitter_buffer_ms + 15
             hint = (
-                "AirPlay：接收端緩衝是總延遲的主要來源。HomePod mini 實測總延遲：150 ms → 約 0.44 s、"
-                "250 ms → 約 0.52 s（HomePod 內部固定約 0.25 s）；100 ms 會斷音。斷音就調高一級。"
+                f"AirPlay 總延遲 ≈ HomePod 最小緩衝 + 接收端緩衝 + 抖動緩衝 + 約 15 ms ≈ {est} ms。"
+                "HomePod mini 實測與此公式一致，地板約 140 ms（接收端緩衝低於 100 ms 不再更低且會重播）。"
+                "若斷音或聲音重複，先調高接收端緩衝。"
             )
         else:
             hint = "此種類接收端自行決定緩衝（2–5 秒），延遲設定對它無效。"
@@ -768,6 +800,11 @@ class ControlPanel(_PanelBase):
     def _rescan(self) -> None:
         self.app._rescan_async()  # pylint: disable=protected-access
         self._fill_device_combo(self._device_combo)
+
+    def _on_preset_selected(self, _event=None) -> None:
+        name = self._vars["preset"].get()
+        if name in LATENCY_PRESETS:
+            self._apply_preset(name)
 
     def _on_drift(self) -> None:
         self.app._set_drift_mode(self._vars["drift"].get())  # pylint: disable=protected-access
