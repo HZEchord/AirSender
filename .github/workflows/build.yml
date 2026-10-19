@@ -6,6 +6,10 @@ on:
     tags: ["v*"]
   pull_request:
 
+# tag 發布時 softprops/action-gh-release 需要寫入 Release 的權限（新倉庫預設 GITHUB_TOKEN 唯讀）
+permissions:
+  contents: write
+
 jobs:
   windows:
     runs-on: windows-latest
