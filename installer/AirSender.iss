@@ -1,7 +1,7 @@
 ; Inno Setup 6 安裝腳本。由 build.ps1 呼叫；需先以 PyInstaller 產生 ..\dist\AirSender\。
 
 #define MyAppName "AirSender"
-#define MyAppVersion "0.7.0"
+#define MyAppVersion "0.7.1"
 #define MyAppPublisher "AirSender"
 #define MyAppExeName "AirSender.exe"
 
@@ -63,6 +63,10 @@ Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser; Check: Wizar
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExeName} /F & taskkill /IM AirSenderCLI.exe /F"; Flags: runhidden; RunOnceId: "KillApp"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#MyAppName}"""; Flags: runhidden; RunOnceId: "FwDelete"; Check: IsAdminInstallMode
+
+[InstallDelete]
+; 升級安裝：先清掉舊版的 _internal，避免舊版殘留的套件檔案堆積
+Type: filesandordirs; Name: "{app}\_internal"
 
 [UninstallDelete]
 ; PyInstaller 執行期可能在 _internal 產生快取；連同安裝目錄整個清掉
