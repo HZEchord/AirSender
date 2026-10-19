@@ -14,12 +14,12 @@ import pystray
 from PIL import Image, ImageDraw
 from pystray import Menu, MenuItem
 
-from . import APP_NAME, __version__, autostart, dialogs, firewall
+from . import APP_NAME, autostart, dialogs, firewall
 from .capture import list_loopback_devices
-from .config import DRIFT_MODES, LATENCY_PRESETS, RESAMPLE_QUALITIES, Config, log_dir
+from .config import Config, log_dir
 from .sinks import HTTP_PULL_KINDS, KIND_LABELS
 from .streamer import Device, State, Streamer
-from .ui import ControlPanel, UiThread
+from .ui import ControlPanel, QuickPanel, UiThread
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ class TrayApp:
         self.streamer = Streamer(self.config, self._on_state)
         self.ui = UiThread()
         self.panel = ControlPanel(self.ui, self)
+        self.quick = QuickPanel(self.ui, self)
         self.icon = pystray.Icon(
             APP_NAME, make_icon_image(False), APP_NAME, menu=Menu(self._menu_items)
         )
@@ -107,6 +108,7 @@ class TrayApp:
             self._notify(message or "連線中斷，重新連線中")
         self._update_menu()
         self.panel.refresh()
+        self.quick.refresh()
 
     def _notify(self, message: str, title: str = APP_NAME) -> None:
         try:
@@ -171,6 +173,7 @@ class TrayApp:
                 self._scanning = False
                 self._update_menu()
                 self.panel.refresh()
+                self.quick.refresh()
 
         threading.Thread(target=worker, name="scan", daemon=True).start()
 
@@ -395,152 +398,20 @@ class TrayApp:
         for spec in list(self.config.snapcast_servers):
             yield MenuItem(f"移除 Snapcast {spec}", _call(self._remove_snapcast, spec))
 
-    def _latency_items(self):
-        for label, ms in LATENCY_PRESETS.items():
-            yield MenuItem(
-                label,
-                _call(self._set_latency, ms),
-                checked=_check(lambda v=ms: self.config.receiver_latency_ms == v),
-                radio=True,
-            )
-        yield Menu.SEPARATOR
-        yield MenuItem("本機抖動緩衝", Menu(self._jitter_items))
-
-    def _jitter_items(self):
-        for label, ms in JITTER_PRESETS.items():
-            yield MenuItem(
-                label,
-                _call(self._set_jitter, ms),
-                checked=_check(lambda v=ms: self.config.jitter_buffer_ms == v),
-                radio=True,
-            )
-
-    def _quality_items(self):
-        yield MenuItem("時鐘漂移補償", None, enabled=False)
-        for label, mode in DRIFT_MODES.items():
-            yield MenuItem(
-                label,
-                _call(self._set_drift_mode, mode),
-                checked=_check(lambda v=mode: self.config.drift_compensation == v),
-                radio=True,
-            )
-        yield Menu.SEPARATOR
-        yield MenuItem("固定比率重取樣品質", None, enabled=False)
-        for label, q in RESAMPLE_QUALITIES.items():
-            yield MenuItem(
-                label,
-                _call(self._set_quality, q),
-                checked=_check(lambda v=q: self.config.resample_quality == v),
-                radio=True,
-            )
-        yield Menu.SEPARATOR
-        yield MenuItem(
-            "TPDF dither（轉 16-bit 時）",
-            lambda icon, item: self._toggle_dither(),
-            checked=lambda item: self.config.dither,
-        )
-
-    def _capture_items(self):
-        yield MenuItem(
-            "跟隨 Windows 預設輸出",
-            lambda icon, item: self._set_capture_device(None),
-            checked=lambda item: self.config.capture_device_index is None,
-            radio=True,
-        )
-        for index, name, rate in self.capture_devices:
-            yield MenuItem(
-                f"{name}（{rate} Hz）",
-                _call(self._set_capture_device, index),
-                checked=_check(lambda i=index: self.config.capture_device_index == i),
-                radio=True,
-            )
-        yield Menu.SEPARATOR
-        yield MenuItem(
-            "重新整理",
-            _call(lambda: (self._refresh_capture_devices(), self._update_menu())),
-        )
-
-    def _volume_items(self):
-        yield MenuItem(
-            "不控制接收端音量",
-            lambda icon, item: self._set_volume(None),
-            checked=lambda item: self.config.volume is None,
-            radio=True,
-        )
-        yield Menu.SEPARATOR
-        for v in VOLUME_STEPS:
-            yield MenuItem(
-                f"{v}%",
-                _call(self._set_volume, v),
-                checked=_check(lambda p=v: self.config.volume == p),
-                radio=True,
-            )
-
-    def _pairing_items(self):
-        device = self._current_device()
-        name = device.name if device else "（尚未選擇接收端）"
-        is_airplay = device is not None and device.kind == "airplay"
-        has = bool(device and self.streamer.has_credentials(device))
-        yield MenuItem(f"目前接收端：{name}", None, enabled=False)
-        yield MenuItem(
-            f"配對…{'（已配對）' if has else ''}",
-            _call(self._pair_current),
-            enabled=is_airplay,
-        )
-        yield MenuItem("設定接收端密碼…", _call(self._set_password_current), enabled=is_airplay)
-        yield MenuItem("忘記配對與密碼", _call(self._forget_current), enabled=has)
-        yield Menu.SEPARATOR
-        yield MenuItem("HomePod 不需要配對；Apple TV 開啟「需要裝置驗證」或第三方接收端設了密碼時才需要", None, enabled=False)
 
     def _menu_items(self):
+        """右鍵選單只留最常用的；左鍵（預設項目）開快捷面板，其餘設定在控制面板。"""
         for line in self._status_lines():
             yield MenuItem(line, None, enabled=False)
         yield Menu.SEPARATOR
-        yield MenuItem("開啟控制面板…", _call(self.panel.show), default=True)
+        yield MenuItem("快捷面板", _call(self.quick.toggle), default=True)
+        yield MenuItem("控制面板…", _call(self.panel.show))
         yield MenuItem(
             lambda item: "停止串流" if self.streamer.is_active else "開始串流",
             lambda icon, item: self._toggle_stream(),
         )
-        yield MenuItem(
-            "重新連線",
-            _call(self._reconnect),
-            enabled=lambda item: self._current_device() is not None,
-        )
-        yield MenuItem(
-            "音量 +5",
-            _call(self._volume_step, 5),
-            enabled=lambda item: self.streamer.is_active,
-        )
-        yield MenuItem(
-            "音量 -5",
-            _call(self._volume_step, -5),
-            enabled=lambda item: self.streamer.is_active,
-        )
-        yield Menu.SEPARATOR
         yield MenuItem("接收端", Menu(self._device_items))
-        yield MenuItem("接收端音量", Menu(self._volume_items))
-        yield MenuItem("配對與密碼", Menu(self._pairing_items))
         yield Menu.SEPARATOR
-        yield MenuItem("延遲", Menu(self._latency_items))
-        yield MenuItem("音質", Menu(self._quality_items))
-        yield MenuItem("擷取來源", Menu(self._capture_items))
-        yield Menu.SEPARATOR
-        yield MenuItem(
-            "啟動後自動連線到上次裝置",
-            lambda icon, item: self._toggle_autostart_stream(),
-            checked=lambda item: self.config.autostart_stream,
-        )
-        yield MenuItem(
-            "登入 Windows 時自動啟動",
-            lambda icon, item: self._toggle_autostart_windows(),
-            checked=lambda item: autostart.is_enabled(),
-        )
-        yield MenuItem(
-            "允許通過 Windows 防火牆（需系統管理員）", _call(self._add_firewall_rules)
-        )
-        yield MenuItem("開啟記錄資料夾", lambda icon, item: self._open_logs())
-        yield Menu.SEPARATOR
-        yield MenuItem(f"{APP_NAME} v{__version__}", None, enabled=False)
         yield MenuItem("結束", lambda icon, item: self._quit())
 
 
