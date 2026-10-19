@@ -691,7 +691,7 @@ class ControlPanel(_PanelBase):
         sp = ttk.Spinbox(daysf, from_=0, to=90, width=4, textvariable=v["update_days"], command=self._on_update_days)
         sp.pack(side="left", padx=4)
         sp.bind("<FocusOut>", lambda _e: self._on_update_days())
-        ttk.Label(daysf, text="天自動檢查（0 = 不檢查）").pack(side="left")
+        ttk.Label(daysf, text="天自動檢查（0 = 不檢查，預設關閉）").pack(side="left")
 
         # ---- 選項
         opt = ttk.Frame(outer)

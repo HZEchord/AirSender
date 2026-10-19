@@ -164,7 +164,7 @@ AirSenderCLI.exe --device 客廳 --headless --latency 100 --latency-min 25 --jit
 
 ## 更新與維護
 
-- **使用者端**：AirSender 每 10 天向 GitHub Releases 查一次（控制面板「更新」區可改週期或立即檢查）。
+- **使用者端**：自動更新檢查**預設關閉**；在控制面板「更新」區把天數設為非 0 即可啟用，或按「立即檢查」。
   有新版時會通知；按「更新」會下載安裝程式、以 GitHub 提供的 SHA-256 驗證、靜默安裝後自動重新啟動。
   更新檢查需要倉庫為公開；私有倉庫測試可設環境變數 `AIRSENDER_GITHUB_TOKEN`。
 - **開發端**：Dependabot 每週一檢查 pyatv 等套件與 GitHub Actions 的新版並開 PR，CI 自動 lint、測試、打包。
