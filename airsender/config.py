@@ -89,7 +89,7 @@ class Config:
     correction_strength: int = 100  # 套用量測修正的百分比
     correction_max_boost_db: float = 6.0
     correction_f_low: int = 40
-    correction_f_high: int = 10000
+    correction_f_high: int = 500  # 只修房間主導的低頻區（Schroeder 頻率以下）；高頻受麥克風指向與位置影響太大
     mic_calibration_file: str = ""  # 可選：REW 格式麥克風校正檔
 
     # 自動更新
