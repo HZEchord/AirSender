@@ -54,9 +54,13 @@ def _enable_high_resolution_timer() -> None:
 
 
 class Streamer:
-    def __init__(self, config: Config, on_state: Optional[StateCallback] = None) -> None:
+    def __init__(
+        self, config: Config, on_state: Optional[StateCallback] = None, *, persist: bool = True
+    ) -> None:
+        """persist=False 時不把選擇的裝置 / 音量寫回設定檔（量測與測試工具用）。"""
         self.config = config
         self._on_state = on_state
+        self._persist = persist
         # 曾測試 SelectorEventLoop（UDP 直接 sendto）與 Windows 預設 Proactor 的差異，
         # 在 125 封包/秒下 CPU 差異落在量測雜訊內（約 4–5% 單核心），故維持預設迴圈。
         self._loop = asyncio.new_event_loop()
@@ -117,7 +121,7 @@ class Streamer:
         self.config.device_address = device.address
         self.config.device_kind = device.kind
         self.config.device_url = device.url
-        self.config.save()
+        self._save()
         asyncio.run_coroutine_threadsafe(self._start(device), self._loop).result(15)
 
     def stop(self) -> None:
@@ -143,7 +147,7 @@ class Streamer:
 
     def set_volume(self, percent: int) -> None:
         self.config.volume = max(0, min(100, percent))
-        self.config.save()
+        self._save()
         asyncio.run_coroutine_threadsafe(self._set_volume(self.config.volume), self._loop)
 
     def volume_step(self, delta: int) -> Optional[int]:
@@ -201,6 +205,10 @@ class Streamer:
         self.config.save()
 
     # ------------------------------------------------------------ 內部（事件迴圈執行緒）
+    def _save(self) -> None:
+        if self._persist:
+            self.config.save()
+
     def _set_state(self, state: State, message: str = "") -> None:
         self.state = state
         self.message = message

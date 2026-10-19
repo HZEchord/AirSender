@@ -38,6 +38,25 @@ class CaptureStatus:
     frames_captured: int = field(default=0)
 
 
+def _co_initialize() -> bool:
+    try:
+        import ctypes  # pylint: disable=import-outside-toplevel
+
+        hr = ctypes.windll.ole32.CoInitializeEx(None, 0x0)  # COINIT_MULTITHREADED  # type: ignore[attr-defined]
+        return hr in (0, 1)  # S_OK / S_FALSE（已初始化）
+    except Exception:  # pylint: disable=broad-except
+        return False
+
+
+def _co_uninitialize() -> None:
+    try:
+        import ctypes  # pylint: disable=import-outside-toplevel
+
+        ctypes.windll.ole32.CoUninitialize()  # type: ignore[attr-defined]
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
 def list_loopback_devices() -> list[tuple[int, str, int]]:
     """列出所有可擷取的輸出裝置 (index, 名稱, 取樣率)。index 為 loopback 裝置索引。"""
     p = pa.PyAudio()
@@ -138,6 +157,17 @@ class WasapiLoopbackCapture:
                 changed.set()
 
     def _run(self) -> None:
+        # WASAPI 需要呼叫執行緒已初始化 COM。PortAudio 只在第一次 Pa_Initialize 的執行緒初始化，
+        # 若程式其他執行緒（例如量測工具的主執行緒）先建立了 PyAudio，這裡開串流會得到
+        # 「[Errno -9999] Unanticipated host error」。自己初始化一次最保險（重複呼叫無害）。
+        com_initialized = _co_initialize()
+        try:
+            self._capture_loop()
+        finally:
+            if com_initialized:
+                _co_uninitialize()
+
+    def _capture_loop(self) -> None:
         while not self._stop.is_set():
             p = pa.PyAudio()
             stream = None

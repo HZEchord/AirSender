@@ -159,7 +159,7 @@ def main() -> int:
     cfg.jitter_buffer_ms = args.jitter
     cfg.volume = args.volume
 
-    streamer = AirPlayStreamer(cfg, lambda s, m: print(f"  [{s.value}] {m}", flush=True))
+    streamer = AirPlayStreamer(cfg, lambda s, m: print(f"  [{s.value}] {m}", flush=True), persist=False)
     streamer.start_loop()
     p = pa.PyAudio()
     try:

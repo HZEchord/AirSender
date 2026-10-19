@@ -16,6 +16,8 @@ _LOGGER = logging.getLogger(__name__)
 # 選單顯示名稱 -> 接收端緩衝（毫秒）。這是 AirPlay 接收端「收到封包後等多久才播」的時間，
 # 是整體延遲的主要來源。設太低時 HomePod 會因封包來不及到而出現斷音或靜音。
 LATENCY_PRESETS: dict[str, int] = {
+    "實驗性 (100 ms，HomePod 會斷音)": 100,
+    "最低 (150 ms)": 150,
     "極低 (250 ms)": 250,
     "低 (500 ms)": 500,
     "中 (1000 ms)": 1000,
