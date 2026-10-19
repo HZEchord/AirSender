@@ -849,7 +849,7 @@ class ControlPanel(_PanelBase):
                                            command=lambda: self.app._toggle_room_correction(v["room_enabled"].get()))  # pylint: disable=protected-access
         self._room_check.grid(row=0, column=0, sticky="w")
         v["room_status"] = tk.StringVar()
-        ttk.Label(rf, textvariable=v["room_status"], style="Muted.TLabel", width=34, anchor="w").grid(
+        ttk.Label(rf, textvariable=v["room_status"], style="Muted.TLabel", width=40, anchor="w").grid(
             row=0, column=1, sticky="w", padx=8
         )
         cal_row = ttk.Frame(rf)
