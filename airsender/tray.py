@@ -61,6 +61,7 @@ class TrayApp:
     def __init__(self) -> None:
         self.config = Config.load()
         self.devices: list[Device] = []
+        self.selected_device: Optional[Device] = None
         self.capture_devices = []
         self._scanning = False
         self._last_notify = 0.0
@@ -205,17 +206,25 @@ class TrayApp:
             return
         device = self._current_device()
         if device is None:
-            self._notify("請先在「接收端」選擇裝置")
+            self._notify("找不到任何接收端，請先按「重新掃描」")
             return
         self._select_device(device)
 
     def _current_device(self) -> Optional[Device]:
+        """目前選擇的接收端：串流中的 > 使用者在面板選的 > 設定檔記住的 > 清單第一台。"""
         if self.streamer.device:
             return self.streamer.device
+        if self.selected_device is not None:
+            match = next((d for d in self.devices if d.identifier == self.selected_device.identifier), None)
+            if match is not None:
+                return match
         for d in self.devices:
             if d.identifier == self.config.device_identifier:
                 return d
-        return None
+        return self.devices[0] if self.devices else None
+
+    def set_selected_device(self, device: Optional[Device]) -> None:
+        self.selected_device = device
 
     def _apply_and_restart(self) -> None:
         self.config.save()
@@ -255,7 +264,7 @@ class TrayApp:
     def _reconnect(self) -> None:
         device = self._current_device()
         if device is None:
-            self._notify("請先在「接收端」選擇裝置")
+            self._notify("找不到任何接收端，請先按「重新掃描」")
             return
         self._select_device(device)
 

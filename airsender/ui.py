@@ -198,11 +198,17 @@ class _PanelBase:
         names, keys = self._device_names()
         self._device_keys = keys
         combo["values"] = names
-        current = self.app.streamer.device or self.app._current_device()  # pylint: disable=protected-access
+        current = self.app._current_device()  # pylint: disable=protected-access
         if current and current.identifier in keys:
             combo.current(keys.index(current.identifier))
         elif names:
             combo.current(0)
+        # 下拉顯示的裝置就是目前選擇
+        idx = combo.current()
+        if 0 <= idx < len(keys) and keys[idx]:
+            shown = next((d for d in self.app.devices if d.identifier == keys[idx]), None)
+            if shown is not None and (current is None or current.identifier != shown.identifier):
+                self.app.set_selected_device(shown)
 
     def _on_device_selected(self, combo) -> None:
         idx = combo.current()
@@ -211,6 +217,7 @@ class _PanelBase:
         key = self._device_keys[idx]
         device = next((d for d in self.app.devices if d.identifier == key), None)
         if device is not None:
+            self.app.set_selected_device(device)
             self.app._select_device(device)  # pylint: disable=protected-access
 
     def _status_lines(self) -> tuple[str, str]:
