@@ -247,6 +247,10 @@ class TrayApp:
         self.config.dither = not self.config.dither
         self._apply_and_restart()
 
+    def _set_airplay_rate(self, value: str) -> None:
+        self.config.airplay_sample_rate = value
+        self._apply_and_restart()
+
     def _set_drift_mode(self, mode: str) -> None:
         self.config.drift_compensation = mode
         self._apply_and_restart()

@@ -23,7 +23,7 @@
 
 | 項目 | 數值 | 說明 |
 | --- | --- | --- |
-| 音訊格式 | 44.1 kHz / 16-bit / 2 ch PCM | AirPlay 音訊協定的上限。來源若是 48k / 96k / 176.4k 會以 soxr 重取樣（SNR > 120 dB），24-bit 以上會加 TPDF dither 轉 16-bit |
+| 音訊格式 | 44.1 或 48 kHz / 16-bit / 2 ch PCM | HomePod realtime 實測上限（16-bit 固定）。來源取樣率不同時以 soxr 重取樣（SNR > 120 dB），24-bit 以上加 TPDF dither 轉 16-bit |
 | 本機延遲 | 約 30–55 ms | WASAPI 10 ms 區塊 + 抖動緩衝 20–40 ms（可調 10–150 ms） |
 | HomePod 最小緩衝（latencyMin） | 25–250 ms（預設 50） | AirPlay 2 SETUP 參數，pyatv 原本寫死 250 ms。這才是先前「HomePod 內部 250 ms」的真面目，可降到 25 ms |
 | 接收端緩衝 | 100 ms 起（預設 150） | RTP 時間戳的提前量。HomePod mini 低於 100 ms 不再降低總延遲且會重播 |
@@ -153,14 +153,15 @@ AirSenderCLI.exe --device 客廳 --headless --latency 100 --latency-min 25 --jit
 
 ## 無損、bit-perfect 與格式轉換的真相
 
-AirPlay 音訊只收 **44.1 kHz / 16-bit**，這是 Apple 接收端的硬限制，任何傳送端都一樣（Apple 自家的 AirPlay 也是）。
-AirSender 在這個限制內做到「不經有損壓縮」，但來源格式若不是 44.1/16 就必須轉換：
+AirPlay realtime 串流在 HomePod mini 上實測可收 **44.1 或 48 kHz，位元深度固定 16-bit**（24-bit 各種打包都被當 16-bit 解讀，
+88.2 / 96 kHz 會半速播放）。AirSender 在這個限制內做到「不經有損壓縮」；控制面板「AirPlay 取樣率」預設自動：
+擷取裝置是 48 / 96 / 192 kHz 時用 48 kHz，否則 44.1 kHz。來源格式與串流格式不同時就必須轉換：
 
 | 情況 | AirSender 的處理 | 影響 |
 | --- | --- | --- |
 | Windows 輸出格式 = 44.1 kHz、來源 16-bit、音量 100%、未啟用 EQ | 樣本原樣通過（**bit-perfect**，狀態列會標示） | 無 |
 | Windows 輸出格式 = 44.1 kHz、來源 24-bit 或音量非 100% | 只做 24 → 16-bit 的 TPDF dither | 底噪 −96 dBFS，遠低於房間噪音與 HomePod 自身底噪 |
-| Windows 輸出格式 ≠ 44.1 kHz（例如 DAC 預設 176.4 / 192 kHz） | soxr VHQ 重取樣到 44.1 kHz，再 dither | 22 kHz 以上內容移除（無可聽內容）；重取樣 SNR 約 150 dB |
+| Windows 輸出格式 ≠ 串流取樣率（例如 DAC 176.4 kHz → 44.1 kHz，或 96 kHz → 48 kHz） | soxr VHQ 重取樣，再 dither | 22–24 kHz 以上內容移除（無可聽內容）；重取樣 SNR 約 150 dB |
 
 要注意的是：**Windows 混音器本身**也會把所有來源重取樣到裝置的輸出格式。DAC 設在 176.4 kHz 時，
 44.1 kHz 的音樂先被 Windows 升頻再被 AirSender 降回，等於兩次轉換。想把轉換減到最少：

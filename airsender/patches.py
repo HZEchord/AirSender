@@ -17,7 +17,7 @@ from .live_source import LiveAudioSource
 
 _LOGGER = logging.getLogger(__name__)
 
-_state = {"latency_ms": 1500, "latency_min_ms": 250, "latency_max_ms": 2000, "applied": False}
+_state = {"latency_ms": 1500, "latency_min_ms": 250, "latency_max_ms": 2000, "sample_rate": None, "applied": False}
 _stats = {"retransmit_requests": 0, "retransmit_packets": 0}
 
 
@@ -36,6 +36,11 @@ def set_latency_ms(latency_ms: int) -> None:
 
 def latency_frames(sample_rate: int) -> int:
     return int(sample_rate * _state["latency_ms"] / 1000)
+
+
+def set_sample_rate(rate) -> None:
+    """AirPlay 串流取樣率（None = 依接收端 mDNS 宣告，通常 44100）。實測 HomePod 可收 48000。"""
+    _state["sample_rate"] = int(rate) if rate else None
 
 
 def set_latency_min_ms(latency_min_ms: int) -> None:
@@ -81,6 +86,11 @@ def apply() -> None:
         if isinstance(body, dict) and body.get("streams"):
             stream = body["streams"][0]
             if "latencyMin" in stream:
+                if _state["sample_rate"]:
+                    from .formats import AUDIO_FORMAT_FLAG  # pylint: disable=import-outside-toplevel
+
+                    stream["sr"] = int(_state["sample_rate"])
+                    stream["audioFormat"] = AUDIO_FORMAT_FLAG.get(int(_state["sample_rate"]), 0x800)
                 sample_rate = int(stream.get("sr", 44100))
                 stream["latencyMin"] = int(sample_rate * _state["latency_min_ms"] / 1000)
                 stream["latencyMax"] = max(
@@ -90,6 +100,18 @@ def apply() -> None:
         return await original_setup(self, headers=headers, body=body)
 
     RtspSession.setup = patched_setup  # type: ignore[assignment]
+
+    # 3b. StreamClient 的輸出格式：覆寫取樣率（接收端 mDNS 宣告 44100，但 realtime 實測可收 48000）
+    from pyatv.protocols.raop.stream_client import StreamClient  # pylint: disable=import-outside-toplevel
+
+    original_update = StreamClient._update_output_properties  # pylint: disable=protected-access
+
+    def patched_update(self, properties):
+        original_update(self, properties)
+        if _state["sample_rate"]:
+            self.context.sample_rate = int(_state["sample_rate"])
+
+    StreamClient._update_output_properties = patched_update  # type: ignore[assignment]  # pylint: disable=protected-access
 
     # 4. 統計接收端要求重傳的次數（Wi-Fi 抖動的直接指標）
     from pyatv.protocols.raop.stream_client import ControlClient  # pylint: disable=import-outside-toplevel

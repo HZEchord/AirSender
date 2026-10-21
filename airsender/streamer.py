@@ -21,7 +21,7 @@ import pyatv
 from pyatv.const import Protocol
 from pyatv.interface import MediaMetadata
 
-from . import APP_NAME, firewall, pairing, patches, roomcal
+from . import APP_NAME, firewall, formats, pairing, patches, roomcal
 from .capture import CaptureStatus
 from .config import Config
 from .httpstream import HttpStreamServer, PcmBroadcaster
@@ -74,6 +74,7 @@ class Streamer:
         self.broadcaster = PcmBroadcaster(self._loop, config)
         self.http = HttpStreamServer(self._loop, self.broadcaster, config.http_port)
         self.device: Optional[Device] = None
+        self.airplay_rate: int = 44100
         self.state = State.IDLE
         self.message = ""
         patches.apply()
@@ -391,6 +392,13 @@ class Streamer:
         patches.set_latency_ms(self.config.receiver_latency_ms)
         patches.set_latency_min_ms(self.config.airplay_latency_min_ms)
         patches.reset_stats()
+        source_rate = await self._loop.run_in_executor(
+            None, formats.device_native_rate, self.config.capture_device_index
+        )
+        rate = formats.choose_airplay_rate(self.config.airplay_sample_rate, source_rate)
+        patches.set_sample_rate(rate)
+        self.airplay_rate = rate
+        _LOGGER.info("AirPlay 取樣率 %d Hz（來源 %s Hz，設定 %s）", rate, source_rate, self.config.airplay_sample_rate)
         atv = await pyatv.connect(conf, self._loop, protocol=Protocol.RAOP)
         self._atv = atv
         try:

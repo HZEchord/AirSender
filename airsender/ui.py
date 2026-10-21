@@ -33,6 +33,7 @@ if TYPE_CHECKING:  # pragma: no cover
 _LOGGER = logging.getLogger(__name__)
 
 UI_FONT = "Microsoft JhengHei UI"
+RATE_CHOICES = {"自動": "auto", "44.1 kHz": "44100", "48 kHz": "48000"}
 
 
 class UiThread:
@@ -221,6 +222,11 @@ HELP = {
         "固定比率：維持 VHQ 固定比率，緩衝累積過多時一次裁掉。"
     ),
     "quality": "固定比率重取樣的 soxr 品質。VHQ 的 SNR 約 150 dB，\nCPU 差異很小，沒有理由不用最高。",
+    "rate": (
+        "AirPlay 串流取樣率。HomePod 實測 realtime 模式可收 44.1 或 48 kHz（16-bit 固定，88.2 / 96 kHz 會半速）。\n"
+        "自動：擷取裝置是 48 / 96 / 192 kHz 時用 48 kHz，否則 44.1 kHz，讓重取樣比率最簡單。\n"
+        "改變後會重新連線。"
+    ),
     "dither": "來源是 24/32-bit 或重取樣後轉成 16-bit 時加入 ±1 LSB 的\nTPDF 雜訊，把量化失真變成均勻的底噪。建議開啟。",
     "room": (
         "校正流程：\n"
@@ -425,6 +431,8 @@ class _PanelBase:
             v["quality"].set(next((k for k, q in RESAMPLE_QUALITIES.items() if q == cfg.resample_quality), "最高 (VHQ)"))
         if "dither" in v:
             v["dither"].set(cfg.dither)
+        if "rate" in v:
+            v["rate"].set(next((k for k, val in RATE_CHOICES.items() if val == cfg.airplay_sample_rate), "自動"))
         if "auto_stream" in v:
             v["auto_stream"].set(cfg.autostart_stream)
         if "auto_win" in v:
@@ -845,6 +853,14 @@ class ControlPanel(_PanelBase):
         self._capture_combo = ttk.Combobox(qf, state="readonly", width=40)
         self._capture_combo.grid(row=2, column=1, columnspan=2, sticky="ew", padx=8, pady=(4, 0))
         self._capture_combo.bind("<<ComboboxSelected>>", self._on_capture_selected)
+        ttk.Label(qf, text="AirPlay 取樣率").grid(row=3, column=0, sticky="w", pady=(4, 0))
+        v["rate"] = tk.StringVar()
+        rate_row = ttk.Frame(qf)
+        rate_row.grid(row=3, column=1, columnspan=2, sticky="ew", padx=8, pady=(4, 0))
+        rc = ttk.Combobox(rate_row, textvariable=v["rate"], state="readonly", values=list(RATE_CHOICES), width=14)
+        rc.pack(side="left")
+        rc.bind("<<ComboboxSelected>>", lambda _e: self.app._set_airplay_rate(RATE_CHOICES[v["rate"].get()]))  # pylint: disable=protected-access
+        help_icon(rate_row, HELP["rate"], self.ui).pack(side="right")
 
         # ---- 房間校正 / 低音
         rf = ttk.LabelFrame(outer, text="房間校正與低音", padding=(10, 6))

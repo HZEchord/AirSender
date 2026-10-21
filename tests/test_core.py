@@ -86,5 +86,17 @@ class SinkHelperTests(unittest.TestCase):
         self.assertIn('protocolInfo="http-get:*:audio/wav', xml)
 
 
+class FormatTests(unittest.TestCase):
+    def test_choose_airplay_rate(self):
+        from airsender.formats import choose_airplay_rate
+
+        self.assertEqual(choose_airplay_rate("auto", 176400), 44100)
+        self.assertEqual(choose_airplay_rate("auto", 48000), 48000)
+        self.assertEqual(choose_airplay_rate("auto", 192000), 48000)
+        self.assertEqual(choose_airplay_rate("auto", None), 44100)
+        self.assertEqual(choose_airplay_rate("44100", 48000), 44100)
+        self.assertEqual(choose_airplay_rate("48000", 176400), 48000)
+
+
 if __name__ == "__main__":
     unittest.main()

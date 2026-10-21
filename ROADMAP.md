@@ -59,7 +59,10 @@
 | `lowLatencyAudioStream` | 25 | AAC-ELD 48 kHz（有損，FaceTime 類用途） |
 | `bufferStream`（buffered，type 103） | 19, 21, 22, 23, 33–63 | **ALAC 44.1/24、ALAC 48/24**、AAC-LC 44.1/48、以及碼表未收錄的更高位元 |
 
-- realtime 模式的 44.1 kHz / 16-bit 是接收端宣告的硬限制，不是建議值。
+- realtime 模式實測（直接送測試音、麥克風驗證音高與純度）：44.1 與 48 kHz 的 16-bit PCM 正確播放
+  （遮罩雖未列 48 kHz 仍可用，已做成「AirPlay 取樣率」選項）；24-bit 以 BE24 / LE24 / S32BE / S32LE 四種打包送出
+  都被當 16-bit 解讀成雜訊；88.2 / 96 kHz 半速播放。結論：realtime = 16-bit 固定、取樣率上限 48 kHz。
+- buffered（type 103）SETUP 在 timingProtocol=NTP 下回 400 Bad Request，證實需要 PTP。
 - buffered 模式宣告支援 ALAC 24-bit（44.1 與 48 kHz）。實例：HomePod 自己抓 Apple Music 無損後分享給另一顆 HomePod，
   就是以 AirPlay 24-bit/48 kHz 傳送（[Digital Trends](https://digitaltrends.com/?p=3278297)）。
 - 代價：buffered 模式需要傳送端提供 PTP 時鐘、以 TCP 送 ALAC 幀、自行編碼 24-bit ALAC；pyatv 完全沒有這些。

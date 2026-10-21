@@ -75,6 +75,7 @@ class Config:
     # 延遲相關
     receiver_latency_ms: int = 150  # 接收端緩衝（RTP 時間戳提前量）
     airplay_latency_min_ms: int = 50  # AirPlay 2 SETUP 的 latencyMin（HomePod 最小緩衝；pyatv 原本寫死 250）
+    airplay_sample_rate: str = "auto"  # auto / 44100 / 48000；HomePod realtime 實測上限 48 kHz、16-bit 固定
     jitter_buffer_ms: int = 40  # 本機抖動緩衝（擷取 -> 傳送之間）
 
     # 音質相關
