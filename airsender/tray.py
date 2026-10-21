@@ -258,11 +258,27 @@ class TrayApp:
         self.panel.refresh()
         self.quick.refresh()
 
+    def _set_transport(self, transport: str) -> None:
+        """把目前模式的傳輸方式改為 realtime / buffered，並套用該傳輸方式的預設組。"""
+        from .config import TRANSPORTS, apply_mode  # pylint: disable=import-outside-toplevel
+
+        if transport not in TRANSPORTS:
+            return
+        if self.config.mode == "music":
+            self.config.music_transport = transport
+        else:
+            self.config.game_transport = transport
+        apply_mode(self.config, self.config.mode)
+        self.config.save()
+        threading.Thread(target=self.streamer.restart, daemon=True).start()
+        self.panel.refresh()
+        self.quick.refresh()
+
     def _set_mode_preset(self, name: str) -> None:
         """把目前模式對應的預設組改為 name 並套用。"""
-        from .config import LATENCY_PRESETS, apply_mode  # pylint: disable=import-outside-toplevel
+        from .config import apply_mode, mode_transport, presets_for  # pylint: disable=import-outside-toplevel
 
-        if name not in LATENCY_PRESETS:
+        if name not in presets_for(mode_transport(self.config, self.config.mode)):
             return
         if self.config.mode == "music":
             self.config.music_preset = name

@@ -97,8 +97,10 @@ class LiveAudioSource(AudioSource):
         drift_compensation: str = "smooth",
         metadata: Optional[MediaMetadata] = None,
         on_first_read: Optional[Callable[[], None]] = None,
+        bit_depth: int = 16,
     ) -> None:
         self._jitter_ms = max(5, jitter_ms)
+        self.bit_depth = bit_depth
         self._capture_device_index = capture_device_index
         self._quality = quality
         self._dither = dither
@@ -126,8 +128,9 @@ class LiveAudioSource(AudioSource):
     # ------------------------------------------------------------ 由 patches 呼叫
     def configure(self, sample_rate: int, channels: int, sample_size: int) -> None:
         """接收端格式確定後（RTSP 完成 SETUP）由 open_source 補丁呼叫。"""
-        if sample_size != 2:
-            raise NotSupportedError(f"只支援 16-bit 接收端（收到 {sample_size * 8}-bit）")
+        expected = 2 if self.bit_depth == 16 else 4  # 24-bit 以 int32 容器承載
+        if sample_size != expected:
+            raise NotSupportedError(f"位元深度不符：來源 {self.bit_depth}-bit，接收端要求 {sample_size * 8}-bit 容器")
         if channels != 2:
             raise NotSupportedError(f"只支援雙聲道接收端（收到 {channels} 聲道）")
         self._sample_rate = sample_rate
@@ -154,6 +157,7 @@ class LiveAudioSource(AudioSource):
             variable_rate=self._smooth,
             rate_adjust=lambda: self.drift.adjustment,
             processor=ENGINE.process,
+            bit_depth=self.bit_depth,
         )
         self.drift.reset()
         self.capture.start()
@@ -170,6 +174,34 @@ class LiveAudioSource(AudioSource):
                 _LOGGER.warning("等待音訊擷取逾時%s，仍繼續串流（會先送靜音）", detail)
                 return
             await asyncio.sleep(0.01)
+
+    # ------------------------------------------------------------ buffered 模式用（不經 pyatv）
+    @property
+    def frame_size(self) -> int:
+        return self._frame_size
+
+    def trim_to_ms(self, keep_ms: float) -> None:
+        """丟掉多餘的舊資料，只留 keep_ms（串流開始前握手期間累積的聲音不需要送）。"""
+        keep = self._align(int(keep_ms * self._sample_rate * self._frame_size / 1000.0))
+        excess = len(self._ring) - keep
+        if excess > 0:
+            self._ring.pop(self._align(excess))
+
+    def mark_started(self) -> None:
+        self._started = True
+        self._primed = True
+        if self._on_first_read:
+            try:
+                self._on_first_read()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("on_first_read 回呼失敗")
+
+    def pop_frames(self, nframes: int) -> Optional[bytes]:
+        """有足夠資料才回傳（原生位元組序的整數樣本），否則 None；不補靜音、不等待。"""
+        need = nframes * self._frame_size
+        if len(self._ring) < need:
+            return None
+        return self._ring.pop(need)
 
     def _align(self, nbytes: int) -> int:
         return nbytes - (nbytes % self._frame_size)

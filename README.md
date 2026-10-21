@@ -23,13 +23,14 @@
 
 | 項目 | 數值 | 說明 |
 | --- | --- | --- |
-| 音訊格式 | 44.1 或 48 kHz / 16-bit / 2 ch PCM | HomePod realtime 實測上限（16-bit 固定）。來源取樣率不同時以 soxr 重取樣（SNR > 120 dB），24-bit 以上加 TPDF dither 轉 16-bit |
+| 音訊格式 | realtime：44.1 或 48 kHz / 16-bit PCM；**buffered：48 kHz / 24-bit ALAC（無損、未壓縮框架）** | realtime 的 16-bit 是 HomePod 的解碼限制；buffered 走 Apple 自己多房間用的路徑，24-bit 實測可播。來源取樣率不同時以 soxr 重取樣（SNR > 120 dB） |
 | 本機延遲 | 約 30–55 ms | WASAPI 10 ms 區塊 + 抖動緩衝 20–40 ms（可調 10–150 ms） |
 | HomePod 最小緩衝（latencyMin） | 25–250 ms（預設 50） | AirPlay 2 SETUP 參數，pyatv 原本寫死 250 ms。這才是先前「HomePod 內部 250 ms」的真面目，可降到 25 ms |
 | 接收端緩衝 | 100 ms 起（預設 150） | RTP 時間戳的提前量。HomePod mini 低於 100 ms 不再降低總延遲且會重播 |
-| 總延遲（實測） | **約 140 ms**（最低組 25 / 100 / 20）、約 220 ms（遊戲 / 影片模式預設「較低」25 / 150 / 30）、約 500 ms（音樂模式預設「標準」） | 用電腦麥克風實測 HomePod mini 發聲的端對端延遲（見下方「量測延遲」），公式：latencyMin + 接收端緩衝 + 抖動緩衝 + 約 15 ms。Apple 自家 macOS → HomePod 約 2 秒 |
+| 總延遲（實測，realtime） | **約 140 ms**（最低組 25 / 100 / 20）、約 220 ms（遊戲 / 影片模式預設「較低」25 / 150 / 30） | 用電腦麥克風實測 HomePod mini 發聲的端對端延遲（見下方「量測延遲」），公式：latencyMin + 接收端緩衝 + 抖動緩衝 + 約 15 ms。Apple 自家 macOS → HomePod 約 2 秒 |
+| 總延遲（實測，buffered） | **提前 60 ms → 111 ms**、75 → 127、100 → 149、200 → 約 250（音樂模式預設「標準」）、350 → 400 ms | 公式：提前量 + 約 50 ms。50 ms 以下 HomePod 跟不上會斷音 |
 
-協定限制：AirPlay 音訊串流只接受 44.1 kHz / 16-bit。這是 Apple 的接收端限制，不是本程式的限制。
+協定限制：realtime 串流只接受 16-bit（44.1 或 48 kHz）；buffered 串流可收 24-bit，但需要傳送端參與 PTP 時鐘同步（本程式已實作）。
 
 HomePod 的麥克風只供它自己（Siri、內建房間自適應）使用，Apple 沒有開放任何介面讓外部裝置取得，所以無法用它來做測試或分析；房間回音補償由 HomePod 內部自動進行。
 
@@ -152,10 +153,27 @@ AirSenderCLI.exe --device 客廳 --headless --latency 100 --latency-min 25 --jit
 | 25 | 50 | 20 | 142 ms，出現重播峰值 |
 若電腦接有喇叭，會先看到一個較早的峰值（電腦喇叭），HomePod 的峰值在 100 ms 之後。
 
+## 兩種傳輸方式：realtime 與 buffered
+
+| | realtime（遊戲 / 影片模式預設） | buffered（音樂模式預設） |
+| --- | --- | --- |
+| AirPlay 2 串流類型 | type 96，UDP | type 103，TCP |
+| 格式 | PCM 16-bit，44.1 / 48 kHz | ALAC 24-bit，48 kHz（未壓縮框架，仍是無損） |
+| 時間基準 | NTP 式，接收端依封包節奏播放 | PTP：HomePod 當主時鐘，傳送端告訴它「rtpTime X 在時刻 T 播放」 |
+| 緩衝在哪 | 本機抖動緩衝 + HomePod 最小緩衝 + 接收端緩衝 | 只有「提前量」一個參數，Wi-Fi 抖動由 HomePod 的緩衝吸收 |
+| 實測總延遲 | 地板約 140 ms，常用 220 ms | 提前 60 ms → 111 ms，100 → 149，200 → 250 |
+| 成熟度 | pyatv 內建路徑，用最久 | 0.11.0 新增，單顆 HomePod mini 驗證 |
+
+控制面板「延遲」區可為每個模式分別選擇傳輸方式；兩種各有自己的預設組。buffered 的 PTP 部分：
+傳送端在 UDP 319 / 320 上以 unicast 與 HomePod 交換 Announce / Sync / Follow_Up / Delay_Req，以 priority1 250 參與 BMCA
+讓 HomePod（248）勝出並當主時鐘，用最小延遲的樣本估計時鐘差（實測路徑延遲約 0.25 ms、抖動 0.3–1.3 ms）。
+Windows 綁這兩個埠不需要管理員權限，但同一台電腦不能同時跑別的 PTP 程式。
+
 ## 無損、bit-perfect 與格式轉換的真相
 
 AirPlay realtime 串流在 HomePod mini 上實測可收 **44.1 或 48 kHz，位元深度固定 16-bit**（24-bit 各種打包都被當 16-bit 解讀，
-88.2 / 96 kHz 會半速播放）。AirSender 在這個限制內做到「不經有損壓縮」；控制面板「AirPlay 取樣率」預設自動：
+88.2 / 96 kHz 會半速播放）；buffered 串流則是 **48 kHz / 24-bit**（24-bit 來源不需 dither，16-bit 來源原樣放大 256 倍，仍是 bit-perfect）。
+AirSender 在這些限制內做到「不經有損壓縮」；realtime 的「AirPlay 取樣率」預設自動：
 擷取裝置是 48 / 96 / 192 kHz 時用 48 kHz，否則 44.1 kHz。來源格式與串流格式不同時就必須轉換：
 
 | 情況 | AirSender 的處理 | 影響 |
@@ -240,14 +258,16 @@ HomePod 的運算音訊（房間感測、低音管理）只對 Apple 自家來�
 ## 架構
 
 ```
-Windows 混音 ──WASAPI loopback──▶ capture.py（soxr 重取樣 + dither）
+Windows 混音 ──WASAPI loopback──▶ capture.py（soxr 重取樣 + dither，16 或 24-bit）
         ──▶ ringbuffer ──▶ live_source.py（抖動緩衝 + 漂移 PI 控制）
-        ──▶ pyatv RAOP/AirPlay 2（ChaCha20 加密 raw PCM）──▶ HomePod
+        ├─ realtime ──▶ pyatv RAOP/AirPlay 2（ChaCha20 加密 raw PCM，UDP）──▶ HomePod
+        └─ buffered ──▶ buffered.py（ALAC 24-bit 框架、ChaCha20、TCP）+ ptp.py（PTP 從屬時鐘）──▶ HomePod
 ```
 
 - `airsender/capture.py`：WASAPI loopback 執行緒、重取樣、dither
 - `airsender/live_source.py`：pyatv `AudioSource` 實作、抖動緩衝、`DriftController`
 - `airsender/patches.py`：對 pyatv 的兩個補丁（接受即時來源；接收端延遲可設定，pyatv 原本寫死 1.5 秒）
+- `airsender/buffered.py`、`airsender/ptp.py`、`airsender/alac.py`：AirPlay 2 buffered 串流（type 103）、PTP 從屬時鐘、ALAC 未壓縮框架
 - `airsender/streamer.py`：掃描、連線、串流、自動重連（獨立 asyncio 執行緒），依接收端種類分派
 - `airsender/httpstream.py`：PCM 廣播器 + aiohttp WAV 伺服器（Cast / DLNA / 播放器共用）
 - `airsender/sinks/`：`cast.py`（pychromecast）、`dlna.py`（async_upnp_client）、`snapcast.py`（TCP）

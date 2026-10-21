@@ -32,7 +32,10 @@
 - 現在的架構一次只串流到一台裝置。「一源多連線」版（一個擷取源餵多條 AirPlay 連線，各自 NTP 同步）能做到跨房間夠用的數毫秒偏差，但同一空間不夠。
 - 毫秒級以下需要 **PTP（IEEE 1588）**：AirPlay 2 的接收端在 buffered 模式用 PTP 對齊，shairport-sync 以 `nqptp` 實作接收端
   （[nqptp 手冊](https://man.archlinux.org/man/nqptp.8.en)：獨占 UDP 319 / 320、需 root）。
-  傳送端要當 PTP 主時鐘並以 buffered 模式送出，pyatv 沒有這部分。可參考的開源傳送端（2026-10 查到，皆未親自驗證）：
+  **2026-10-21 更新：v0.11.0 已實作 buffered + PTP（`airsender/ptp.py`、`airsender/buffered.py`），單顆 HomePod mini 驗證可用。**
+  實際抓包與實作確認：Mac → HomePod 時是 **HomePod 當主時鐘**，傳送端只是從屬（priority1 250 輸給 248），
+  SETRATEANCHORTIME 的 networkTimeTimelineID 填 HomePod 的 grandmasterIdentity。多房間時兩顆 HomePod 會各自當主時鐘，
+  傳送端得分別跟隨兩個時鐘、或自己當 grandmaster（airplay2-rs 回報 HomePod 忽略它的 Sync，待驗證）。參考的開源傳送端：
   - [airplay2-rs](https://github.com/lmcgartland/airplay2-rs)（Rust、GPL-3.0、2026-02 標 Alpha）：自稱 PTP 計時與多房間群組串流可用，
     HomePod mini 實測過；PTP 以較低優先權當 master 讓 HomePod 可搶；ALAC / AAC 編碼；只提 macOS / Linux（319 / 320 要 sudo）。
   - [streamsemble](https://github.com/aprilmaccydee/streamsemble)（C# / .NET 8、AGPL-3.0）：一個 hub 時鐘獨占 UDP 319 / 320 當 grandmaster，
@@ -75,8 +78,13 @@
   就是以 AirPlay 24-bit/48 kHz 傳送（[Digital Trends](https://digitaltrends.com/?p=3278297)）。
 - 代價：buffered 模式需要傳送端提供 PTP 時鐘、以 TCP 送 ALAC 幀、自行編碼 24-bit ALAC；pyatv 完全沒有這些。
   這與第 2 節的多房間 PTP 是同一套工程，做一次可同時得到「24/48 無損」與「毫秒級多房間同步」。
-- buffered 模式的最低延遲未知（shairport-sync 文件只說「很短的延遲後開始播」），需實測。
-- v0.10.0 起「音樂」模式先以 realtime 大緩衝（標準組約 500 ms）代替；buffered + PTP 完成後音樂模式改走該路徑，遊戲 / 影片模式維持 realtime。
+- **已實作（v0.11.0）**：buffered 48 kHz / 24-bit ALAC（未壓縮框架）實測可播，麥克風驗證音高與純度正常。
+  HomePod 的 SETUP 回應：`audioBufferSize` 6144000、`arrivalToRenderLatencyMs` 4、`controlPort` 0（buffered 不用控制埠）、
+  `skipRecord` true；`supportedAudioFormatsExtended.bufferStream` 還列了第 71–75 位元（碼表未收錄，可能是更高格式）。
+- buffered 封包的 SSRC 是格式碼：0x15000000 = ALAC 48 kHz / 24-bit（shairport-sync 從 Apple 傳送端學到的值）。
+  44.1 kHz / 24-bit 的碼未知，所以 buffered 固定 48 kHz。
+- 延遲實測（提前量 → 端對端）：60 → 111 ms、75 → 127、100 → 149、350 → 400；50 與 25 ms 斷音。比 realtime 地板 140 ms 低。
+- 音樂模式預設 buffered「標準」（提前 200 ms ≈ 250 ms）；遊戲 / 影片模式維持 realtime，但控制面板可改成 buffered。
 
 碼表來源：[airplay2-rs AIRPLAY_2_SPEC.md](https://github.com/lmcgartland/airplay2-rs/blob/master/AIRPLAY_2_SPEC.md)、
 [SteeBono airplayreceiver wiki](https://github.com/SteeBono/airplayreceiver/wiki/AirPlay2-Protocol)；位元 33 以上無公開對照。
@@ -84,5 +92,7 @@
 ## 4. 其他待辦
 
 - MMCSS「Pro Audio」排程給擷取與傳送執行緒（穩定度）。
+- buffered：真正的 ALAC 壓縮（省 20–30% 頻寬）；44.1 kHz / 24-bit 的 SSRC 碼；長時間 Wi-Fi 抖動下 60–75 ms 提前量的穩定度。
+- 多房間：一個擷取源餵兩條 buffered 連線，各自跟隨該 HomePod 的 PTP 時鐘並以相同的擷取時間對齊錨點。
 - Google Cast / DLNA 實機驗證（需裝置）。
 - ALAC 編碼（可減 20–30% 空中時間，對 Wi-Fi 斷音有小幫助；需編碼器）。

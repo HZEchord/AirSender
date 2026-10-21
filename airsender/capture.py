@@ -99,6 +99,7 @@ class WasapiLoopbackCapture:
         variable_rate: bool = False,
         rate_adjust: Optional[Callable[[], float]] = None,
         processor: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+        bit_depth: int = 16,
     ) -> None:
         """variable_rate=True 時改用 soxr 可變速率模式，每個區塊以 rate_adjust() 回傳的
         比例（例如 +0.0005 = 輸入視為快 0.05%）微調，用來吸收擷取端與傳送端的時鐘漂移。"""
@@ -109,6 +110,9 @@ class WasapiLoopbackCapture:
         self.device_index = device_index
         self.quality = quality
         self.dither = dither
+        if bit_depth not in (16, 24):
+            raise ValueError(f"不支援的位元深度 {bit_depth}")
+        self.bit_depth = bit_depth
         self.block_ms = block_ms
         self.variable_rate = variable_rate
         self.rate_adjust = rate_adjust
@@ -330,7 +334,9 @@ class WasapiLoopbackCapture:
         x = x if x.flags.writeable and x.base is None else x.copy()
         # 以 32768 縮放（Windows 混音器把 16-bit 樣本除以 32768 變成 float），
         # 這樣 16-bit 來源在音量 100%、無重取樣、無 EQ 時能原樣還原（bit-perfect）
-        x *= 32768.0
+        # 24-bit 輸出時以 2^23 縮放，容器為 int32（低 24 位元有效）
+        full_scale = 32768.0 if self.bit_depth == 16 else 8388608.0
+        x *= full_scale
         if self.dither:
             # 已經是 16-bit 整數值的區塊（bit-perfect 路徑）不加 dither，否則會平白加入 ±1 LSB 雜訊
             frac = np.abs(x - np.rint(x))
@@ -343,7 +349,7 @@ class WasapiLoopbackCapture:
             else:
                 self.status.bitperfect_blocks += 1
         np.rint(x, out=x)
-        np.clip(x, -32768.0, 32767.0, out=x)
-        pcm = x.astype("<i2")
+        np.clip(x, -full_scale, full_scale - 1.0, out=x)
+        pcm = x.astype("<i2") if self.bit_depth == 16 else x.astype("<i4")
         self.status.frames_captured += pcm.shape[0]
         self.sink(pcm.tobytes())

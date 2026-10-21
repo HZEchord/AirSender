@@ -25,6 +25,22 @@ LATENCY_PRESETS: dict[str, tuple[int, int, int]] = {
 }
 DEFAULT_LATENCY_PRESET = "低（約 255 ms）"
 
+# buffered 傳輸的預設組：名稱 → 提前量 ms（總延遲 ≈ 提前量 + 約 50 ms；HomePod mini 實測 60 → 111、75 → 127、100 → 149、350 → 400 ms；50 以下斷音）
+BUFFERED_PRESETS: dict[str, int] = {
+    "最低（約 110 ms）": 60,
+    "較低（約 130 ms）": 75,
+    "低（約 150 ms）": 100,
+    "標準（約 250 ms）": 200,
+    "高（約 550 ms）": 500,
+    "最穩（約 1 s）": 1000,
+}
+DEFAULT_BUFFERED_PRESET = "標準（約 250 ms）"
+BUFFERED_OVERHEAD_MS = 50  # 預填 20 + 擷取 ~10 + 接收端 arrivalToRender 4 + 傳播
+
+# 傳輸方式：realtime = AirPlay 2 realtime 串流（PCM 16-bit、UDP、本機抖動緩衝）；
+# buffered = AirPlay 2 buffered 串流（ALAC 24-bit / 48 kHz、TCP、PTP 時間錨、接收端緩衝）
+TRANSPORTS: dict[str, str] = {"realtime": "realtime 16-bit", "buffered": "buffered 24-bit"}
+
 # 使用模式：遊戲 / 影片 = 盡量壓低延遲；音樂 = 大緩衝求穩（將來 buffered 模式完成後改走 24-bit / PTP）
 MODES: dict[str, str] = {"game": "遊戲 / 影片", "music": "音樂"}
 
@@ -79,7 +95,11 @@ class Config:
     # 使用模式與各模式對應的延遲預設組
     mode: str = "game"  # game / music
     game_preset: str = "較低（約 220 ms）"
-    music_preset: str = "標準（約 500 ms）"
+    music_preset: str = "標準（約 250 ms）"
+    # 各模式的傳輸方式（見 TRANSPORTS）：遊戲 / 影片預設 realtime，音樂預設 buffered
+    game_transport: str = "realtime"
+    music_transport: str = "buffered"
+    buffered_bit_depth: int = 24  # buffered 串流的位元深度（HomePod 宣告支援 24）
     receiver_latency_ms: int = 150  # 接收端緩衝（RTP 時間戳提前量）；預設三值 = 遊戲模式「較低」組
     airplay_latency_min_ms: int = 25  # AirPlay 2 SETUP 的 latencyMin（HomePod 最小緩衝；pyatv 原本寫死 250）
     airplay_sample_rate: str = "auto"  # auto / 44100 / 48000；HomePod realtime 實測上限 48 kHz、16-bit 固定
@@ -140,22 +160,54 @@ class Config:
             _LOGGER.warning("無法寫入設定檔 %s：%s", path, exc)
 
 
+def mode_transport(cfg: Config, mode: str) -> str:
+    value = cfg.game_transport if mode == "game" else cfg.music_transport
+    return value if value in TRANSPORTS else ("buffered" if mode == "music" else "realtime")
+
+
+def presets_for(transport: str) -> dict[str, object]:
+    return BUFFERED_PRESETS if transport == "buffered" else LATENCY_PRESETS
+
+
+def default_preset_for(transport: str) -> str:
+    return DEFAULT_BUFFERED_PRESET if transport == "buffered" else DEFAULT_LATENCY_PRESET
+
+
 def mode_preset_name(cfg: Config, mode: str) -> str:
     name = cfg.game_preset if mode == "game" else cfg.music_preset
-    return name if name in LATENCY_PRESETS else DEFAULT_LATENCY_PRESET
+    transport = mode_transport(cfg, mode)
+    return name if name in presets_for(transport) else default_preset_for(transport)
 
 
 def apply_mode(cfg: Config, mode: str) -> bool:
     """切換模式並套用該模式的延遲預設組；回傳延遲參數是否改變（需重連）。"""
     cfg.mode = mode if mode in MODES else "game"
-    lmin, lat, jit = LATENCY_PRESETS[mode_preset_name(cfg, cfg.mode)]
+    name = mode_preset_name(cfg, cfg.mode)
+    if mode_transport(cfg, cfg.mode) == "buffered":
+        lead = BUFFERED_PRESETS[name]
+        changed = lead != cfg.receiver_latency_ms
+        cfg.receiver_latency_ms = lead
+        return changed
+    lmin, lat, jit = LATENCY_PRESETS[name]
     changed = (lmin, lat, jit) != (cfg.airplay_latency_min_ms, cfg.receiver_latency_ms, cfg.jitter_buffer_ms)
     cfg.airplay_latency_min_ms, cfg.receiver_latency_ms, cfg.jitter_buffer_ms = lmin, lat, jit
     return changed
 
 
+def estimated_latency_ms(cfg: Config) -> int:
+    """依目前模式的傳輸方式估計總延遲。"""
+    if mode_transport(cfg, cfg.mode) == "buffered":
+        return cfg.receiver_latency_ms + BUFFERED_OVERHEAD_MS
+    return cfg.airplay_latency_min_ms + cfg.receiver_latency_ms + cfg.jitter_buffer_ms + 15
+
+
 def latency_preset_name(cfg: Config) -> str:
     """目前設定對應的預設組名稱；不吻合任何組時回傳「自訂」。"""
+    if mode_transport(cfg, cfg.mode) == "buffered":
+        for name, lead in BUFFERED_PRESETS.items():
+            if lead == cfg.receiver_latency_ms:
+                return name
+        return "自訂"
     current = (cfg.airplay_latency_min_ms, cfg.receiver_latency_ms, cfg.jitter_buffer_ms)
     for name, values in LATENCY_PRESETS.items():
         if values == current:

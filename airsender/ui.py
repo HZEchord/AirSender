@@ -28,8 +28,12 @@ from .config import (
     LATENCY_PRESETS,
     MODES,
     RESAMPLE_QUALITIES,
+    TRANSPORTS,
+    estimated_latency_ms,
     latency_preset_name,
     mode_preset_name,
+    mode_transport,
+    presets_for,
 )
 from .sinks import HTTP_PULL_KINDS, KIND_LABELS
 from .streamer_types import State
@@ -216,16 +220,21 @@ def help_icon(parent, text: str, ui: UiThread):
 
 HELP = {
     "mode": (
-        "遊戲 / 影片：盡量壓低延遲（預設「較低」約 220 ms，可改為「最低」約 140 ms）。\n"
-        "音樂：大緩衝求穩（預設「標準」約 500 ms），Wi-Fi 抖動也不斷音。\n"
-        "兩個模式各自記住一組延遲預設；將來 buffered 模式（24-bit、PTP）完成後，音樂模式會改走該路徑。"
+        "遊戲 / 影片：預設 realtime 傳輸（16-bit）、「較低」組約 220 ms。\n"
+        "音樂：預設 buffered 傳輸（ALAC 24-bit / 48 kHz、PTP 時間錨）、「標準」組約 250 ms。\n"
+        "兩個模式各自記住傳輸方式與延遲預設組，切換後自動重連。"
+    ),
+    "transport": (
+        "realtime：PCM 16-bit 走 UDP，本機抖動緩衝；HomePod mini 地板約 140 ms。\n"
+        "buffered：ALAC 24-bit / 48 kHz 走 TCP，HomePod 依 PTP 時鐘在指定時刻播放；\n"
+        "實測提前 60 ms → 總延遲 111 ms、75 → 127、100 → 149、350 → 400 ms，50 ms 以下斷音。\n"
+        "buffered 的延遲更低、位元深度更高；realtime 是較成熟的路徑，遇到問題可切回。"
     ),
     "latency": (
-        "總延遲 ≈ HomePod 最小緩衝 + 接收端緩衝 + 抖動緩衝 + 約 15 ms\n"
-        "\n"
-        "HomePod mini 實測地板約 140 ms（最低組）。\n"
-        "接收端緩衝低於 100 ms 不會更低，反而會重播。\n"
-        "斷音或聲音重複時，先調高接收端緩衝一級。\n"
+        "realtime：總延遲 ≈ HomePod 最小緩衝 + 接收端緩衝 + 抖動緩衝 + 約 15 ms，\n"
+        "HomePod mini 地板約 140 ms；接收端緩衝低於 100 ms 不會更低，反而會重播。\n"
+        "buffered：總延遲 ≈ 提前量（接收端緩衝）+ 約 50 ms；最小緩衝與抖動緩衝不適用。\n"
+        "斷音或聲音重複時，先調高一級。\n"
         "Google Cast / DLNA 自行決定緩衝，這裡的設定對它們無效。"
     ),
     "drift": (
@@ -363,7 +372,15 @@ class _PanelBase:
             if cap.bitperfect_blocks > 0 and cap.bitperfect_blocks >= cap.dithered_blocks:
                 out["source"] += " · bit-perfect"
             src = st.source
-            if src is not None:
+            bst = st.buffered_stats
+            if bst is not None and src is not None:
+                out["source"] += f" · {src.bit_depth}-bit"
+                out["buf"] = f"提前 {min(bst.lead_ms, 999):>3.0f} ms"
+                out["ppm"] = f"漂移 {max(-999, min(999, src.drift_ppm)):>+4.0f} ppm"
+                out["underrun"] = f"補靜音 {min(bst.silence_packets, 99999):>5d}"
+                out["overflow"] = f"溢位 {min(cap.overflows, 99999):>5d}"
+                out["retx"] = f"PTP {min(bst.ptp_jitter_ms, 99.9):>4.1f}ms"
+            elif src is not None:
                 out["buf"] = f"緩衝 {min(src.buffered_ms, 999):>3.0f} ms"
                 out["ppm"] = f"漂移 {max(-999, min(999, src.drift_ppm)):>+4.0f} ppm"
                 out["underrun"] = f"underrun {min(src.underruns, 99999):>5d}"
@@ -437,6 +454,17 @@ class _PanelBase:
             v["room_enabled"].set(cfg.room_correction_enabled)
         if "mode" in v:
             v["mode"].set(cfg.mode)
+        if "transport" in v:
+            v["transport"].set(mode_transport(cfg, cfg.mode))
+        combo = getattr(self, "_preset_combo", None)
+        if combo is not None:
+            values = list(presets_for(mode_transport(cfg, cfg.mode))) + ["自訂"]
+            if list(combo["values"]) != values:
+                combo["values"] = values
+            buffered = mode_transport(cfg, cfg.mode) == "buffered"
+            for slider in (getattr(self, "_slider_jitter", None), getattr(self, "_slider_lmin", None)):
+                if slider is not None:
+                    slider.state(["disabled"] if buffered else ["!disabled"])
         if "mode_detail" in v:
             name = mode_preset_name(cfg, cfg.mode)
             current = latency_preset_name(cfg)
@@ -822,12 +850,21 @@ class ControlPanel(_PanelBase):
                 command=lambda k=key: self.app._set_mode(k),  # pylint: disable=protected-access
             ).pack(side="left", padx=(0, 4))
         help_icon(mode_row, HELP["mode"], self.ui).pack(side="right")
+        v["transport"] = tk.StringVar(value=mode_transport(cfg, cfg.mode))
+        ttk.Label(mode_row, text="傳輸", style="Muted.TLabel").pack(side="left", padx=(16, 4))
+        for key, label in TRANSPORTS.items():
+            ttk.Radiobutton(
+                mode_row, text=label, value=key, variable=v["transport"], style="Seg.Toolbutton",
+                command=lambda k=key: self.app._set_transport(k),  # pylint: disable=protected-access
+            ).pack(side="left", padx=(0, 4))
+        help_icon(mode_row, HELP["transport"], self.ui).pack(side="left")
         v["preset"] = tk.StringVar(value=latency_preset_name(cfg))
         v["preset_label"] = tk.StringVar(value="此模式的預設組")
         ttk.Label(latf, textvariable=v["preset_label"]).grid(row=1, column=0, sticky="w", pady=(4, 0))
         pc_row = ttk.Frame(latf)
         pc_row.grid(row=1, column=1, columnspan=2, sticky="ew", padx=8, pady=(4, 0))
-        pc = ttk.Combobox(pc_row, textvariable=v["preset"], state="readonly", values=list(LATENCY_PRESETS) + ["自訂"], width=18)
+        pc = ttk.Combobox(pc_row, textvariable=v["preset"], state="readonly", values=list(presets_for(mode_transport(cfg, cfg.mode))) + ["自訂"], width=18)
+        self._preset_combo = pc
         pc.pack(side="left")
         pc.bind("<<ComboboxSelected>>", self._on_preset_selected)
         v["latency_est"] = tk.StringVar()
@@ -846,6 +883,7 @@ class ControlPanel(_PanelBase):
         ttk.Label(latf, text="本機抖動緩衝").grid(row=3, column=0, sticky="w", pady=(4, 0))
         s2 = ttk.Scale(latf, from_=self.JITTER_MIN, to=self.JITTER_MAX, variable=v["jitter"], command=lambda _v: self._update_labels())
         s2.grid(row=3, column=1, sticky="ew", padx=8, pady=(4, 0))
+        self._slider_jitter = s2
         self._bind_drag(s2)
         s2.bind("<ButtonRelease-1>", lambda _e: self._apply_latency())
         ttk.Label(latf, textvariable=v["jitter_label"], width=8, anchor="e").grid(row=3, column=2, pady=(4, 0))
@@ -854,6 +892,7 @@ class ControlPanel(_PanelBase):
         ttk.Label(latf, text="HomePod 最小緩衝").grid(row=4, column=0, sticky="w", pady=(4, 0))
         s3 = ttk.Scale(latf, from_=self.LMIN_MIN, to=self.LMIN_MAX, variable=v["lmin"], command=lambda _v: self._update_labels())
         s3.grid(row=4, column=1, sticky="ew", padx=8, pady=(4, 0))
+        self._slider_lmin = s3
         self._bind_drag(s3)
         s3.bind("<ButtonRelease-1>", lambda _e: self._apply_latency())
         ttk.Label(latf, textvariable=v["lmin_label"], width=8, anchor="e").grid(row=4, column=2, pady=(4, 0))
@@ -1004,8 +1043,7 @@ class ControlPanel(_PanelBase):
         self._pw_btn.state(["!disabled"] if is_airplay else ["disabled"])
         cfg = self.app.config
         if is_airplay:
-            est = cfg.airplay_latency_min_ms + cfg.receiver_latency_ms + cfg.jitter_buffer_ms + 15
-            self._vars["latency_est"].set(f"≈ {est} ms")
+            self._vars["latency_est"].set(f"≈ {estimated_latency_ms(cfg)} ms")
         elif device is not None:
             self._vars["latency_est"].set("接收端自行緩衝")
         else:
@@ -1150,7 +1188,8 @@ class ControlPanel(_PanelBase):
 
     def _on_preset_selected(self, _event=None) -> None:
         name = self._vars["preset"].get()
-        if name in LATENCY_PRESETS:
+        cfg = self.app.config
+        if name in presets_for(mode_transport(cfg, cfg.mode)):
             self.app._set_mode_preset(name)  # pylint: disable=protected-access
 
     def _on_drift(self) -> None:

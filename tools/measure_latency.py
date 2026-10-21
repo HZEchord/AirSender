@@ -150,6 +150,7 @@ def main() -> int:
     ap.add_argument("--repeats", type=int, default=5)
     ap.add_argument("--mic", type=int, default=None, help="麥克風裝置索引（預設系統預設輸入）")
     ap.add_argument("--settle", type=float, default=4.0, help="串流開始後等待秒數")
+    ap.add_argument("--mode", choices=["game", "music"], default="game", help="game = realtime；music = buffered（ALAC 24-bit + PTP）")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -160,6 +161,7 @@ def main() -> int:
     cfg.jitter_buffer_ms = args.jitter
     cfg.airplay_latency_min_ms = args.latency_min
     cfg.volume = args.volume
+    cfg.mode = args.mode
 
     streamer = AirPlayStreamer(cfg, lambda s, m: print(f"  [{s.value}] {m}", flush=True), persist=False)
     streamer.start_loop()

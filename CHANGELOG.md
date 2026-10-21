@@ -4,6 +4,31 @@
 
 ## [未發布]
 
+## [0.11.0] - 2026-10-21
+
+### 新增
+- **AirPlay 2 buffered 串流（ALAC 48 kHz / 24-bit + PTP）**，音樂模式預設使用：
+  - `airsender/ptp.py`：PTP 從屬時鐘（UDP 319 / 320 unicast、兩步式 Sync / Follow_Up、Delay_Req / Resp、
+    最小延遲樣本估計偏移）。HomePod 自己當主時鐘，傳送端以 priority1 250 參與 BMCA 讓它勝出；
+    Windows 綁 319 / 320 不需管理員權限
+  - `airsender/buffered.py`：SETUP（timingProtocol PTP）→ 事件通道 → RECORD → SETPEERS → SETUP type 103 →
+    TCP 音訊（ChaCha20-Poly1305、23-bit 序號、SSRC 0x15000000）→ SETRATEANCHORTIME 時間錨；
+    來源沒聲音時補靜音維持時間軸；提前量以漂移控制器維持
+  - `airsender/alac.py`：ALAC 未壓縮（escape）框架打包，無損 24-bit 不需壓縮器
+  - 擷取端 24-bit 輸出（以 2^23 縮放、int32 容器、24-bit TPDF dither）
+- **傳輸方式**可在控制面板為每個模式選擇（realtime 16-bit / buffered 24-bit），各有自己的預設組。
+  buffered 預設組：最低 60 ms、較低 75、低 100、標準 200、高 500、最穩 1000（總延遲 ≈ 提前量 + 50 ms）
+- 狀態列在 buffered 模式顯示提前量、補靜音封包數與 PTP 抖動
+- `tools/measure_latency.py --mode music` 量 buffered 模式
+
+### 實測（HomePod mini，麥克風端對端）
+- buffered 提前 60 ms → 111 ms、75 → 127、100 → 149、350 → 400 ms（各 5/5 一致）；50 ms 以下斷音
+- 比 realtime 的地板（約 140 ms）更低，而且是 24-bit
+- PTP：路徑延遲約 0.25 ms、抖動 0.3–1.3 ms，SETUP 後 0.3 秒內鎖定
+
+### 變更
+- 音樂模式預設組改為 buffered 的「標準（約 250 ms）」；遊戲 / 影片模式維持 realtime 的「較低」
+
 ## [0.10.0] - 2026-10-21
 
 ### 新增

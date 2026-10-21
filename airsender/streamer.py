@@ -22,6 +22,7 @@ from pyatv.const import Protocol
 from pyatv.interface import MediaMetadata
 
 from . import APP_NAME, firewall, formats, pairing, patches, roomcal
+from .buffered import BufferedAirPlayStream, BufferedStats
 from .capture import CaptureStatus
 from .config import Config
 from .httpstream import HttpStreamServer, PcmBroadcaster
@@ -70,6 +71,7 @@ class Streamer:
         self._task: Optional[asyncio.Task] = None
         self._atv = None
         self._source: Optional[LiveAudioSource] = None
+        self._buffered: Optional[BufferedAirPlayStream] = None
         self._sink_set_volume: Optional[Callable[[int], None]] = None
         self.broadcaster = PcmBroadcaster(self._loop, config)
         self.http = HttpStreamServer(self._loop, self.broadcaster, config.http_port)
@@ -102,6 +104,17 @@ class Streamer:
     def source(self) -> Optional[LiveAudioSource]:
         """AirPlay 路徑的即時音源（其他路徑為 None）。"""
         return self._source
+
+    @property
+    def buffered_stats(self) -> Optional[BufferedStats]:
+        """buffered 串流進行中時的統計（提前量、靜音補償、PTP 狀態），否則 None。"""
+        if self._buffered is not None and self._buffered.stats.anchor_count > 0:
+            return self._buffered.stats
+        return None
+
+    @property
+    def transport(self) -> str:
+        return "buffered" if self._buffered is not None else "realtime"
 
     @property
     def capture_status(self) -> Optional[CaptureStatus]:
@@ -318,7 +331,9 @@ class Streamer:
 
     async def _set_volume(self, percent: int) -> None:
         try:
-            if self._atv is not None:
+            if self._buffered is not None:
+                await self._buffered.set_volume(float(percent))
+            elif self._atv is not None:
                 await self._atv.audio.set_volume(float(percent))
             elif self._sink_set_volume is not None:
                 await self._loop.run_in_executor(None, self._sink_set_volume, percent)
@@ -383,11 +398,19 @@ class Streamer:
                 return message + "；可能被 Windows 防火牆攔截，請在選單選「允許通過 Windows 防火牆」"
         return message
 
+    def _use_buffered(self) -> bool:
+        from .config import mode_transport  # pylint: disable=import-outside-toplevel
+
+        return mode_transport(self.config, self.config.mode) == "buffered"
+
     async def _run_airplay(self, device: Device) -> None:
         conf = await self._find_airplay(device)
         if conf is None:
             raise RuntimeError(f"在網路上找不到 {device.name}")
         pairing.apply_credentials(conf, self.config.credentials.get(device.identifier, {}))
+        if self._use_buffered():
+            await self._run_buffered(device, conf)
+            return
 
         patches.set_latency_ms(self.config.receiver_latency_ms)
         patches.set_latency_min_ms(self.config.airplay_latency_min_ms)
@@ -421,6 +444,52 @@ class Streamer:
                 self._source = None
             atv.close()
             self._atv = None
+
+    async def _run_buffered(self, device: Device, conf) -> None:
+        """音樂模式：AirPlay 2 buffered 串流（48 kHz / 24-bit ALAC、PTP 時間錨）。"""
+        from pyatv.protocols.airplay.auth import extract_credentials  # pylint: disable=import-outside-toplevel
+
+        service = conf.get_service(Protocol.AirPlay)
+        if service is None:
+            raise RuntimeError(f"{device.name} 沒有 AirPlay 服務")
+        credentials = extract_credentials(service)
+        rate = 48000  # buffered 封包的格式碼只確認過 48 kHz / 24-bit（SSRC 0x15000000）
+        self.airplay_rate = rate
+        lead_ms = self.config.receiver_latency_ms
+        _LOGGER.info("buffered 串流：%d Hz / %d-bit，提前量 %d ms", rate, self.config.buffered_bit_depth, lead_ms)
+        source = LiveAudioSource(
+            jitter_ms=BufferedAirPlayStream.DEFAULT_PREFILL_MS,
+            capture_device_index=self.config.capture_device_index,
+            quality=self.config.resample_quality,
+            dither=self.config.dither,
+            drift_compensation="smooth",
+            metadata=self._metadata(),
+            bit_depth=self.config.buffered_bit_depth,
+            on_first_read=lambda: self._set_state(State.STREAMING, device.name),
+        )
+        source.configure(rate, 2, 2 if self.config.buffered_bit_depth == 16 else 4)
+        await source.wait_ready()
+        self._source = source
+        stream = BufferedAirPlayStream(
+            str(conf.address),
+            service.port,
+            credentials,
+            source,
+            sample_rate=rate,
+            bit_depth=self.config.buffered_bit_depth,
+            lead_ms=lead_ms,
+            latency_min_ms=self.config.airplay_latency_min_ms,
+            name=APP_NAME,
+        )
+        if self.config.volume is not None:
+            await stream.set_volume(float(self.config.volume))
+        self._buffered = stream
+        try:
+            await stream.run()
+        finally:
+            self._buffered = None
+            source.stop()
+            self._source = None
 
     async def _run_http_pull(self, device: Device) -> None:
         await self.http.start()
