@@ -49,6 +49,26 @@
   沒有任何音訊特徵值；Apple 不開放第三方存取 HomePod 麥克風（[9to5Mac](https://9to5mac.com/2019/10/21/smart-speakers-can-eavesdrop/)）。
   對講功能與 Siri 的錄音都不可程式化取得。所有聲學量測仍以電腦麥克風為準。
 
+## 3.5 24-bit / 48 kHz 無損到 HomePod：不是不可能，但要 buffered 模式 + PTP
+
+2026-10-21 直接向 HomePod mini（audioOS 980.77.2）要 `/info`，`supportedFormats` 的位元遮罩說明了格式限制來自哪裡：
+
+| 串流類型 | 遮罩位元 | 格式（依社群逆向的碼表） |
+| --- | --- | --- |
+| `audioStream`（realtime，type 96，AirSender 目前用的） | 11, 18, 22, 24 | PCM 44.1/16、ALAC 44.1/16、AAC-LC 44.1、AAC-ELD 44.1 |
+| `lowLatencyAudioStream` | 25 | AAC-ELD 48 kHz（有損，FaceTime 類用途） |
+| `bufferStream`（buffered，type 103） | 19, 21, 22, 23, 33–63 | **ALAC 44.1/24、ALAC 48/24**、AAC-LC 44.1/48、以及碼表未收錄的更高位元 |
+
+- realtime 模式的 44.1 kHz / 16-bit 是接收端宣告的硬限制，不是建議值。
+- buffered 模式宣告支援 ALAC 24-bit（44.1 與 48 kHz）。實例：HomePod 自己抓 Apple Music 無損後分享給另一顆 HomePod，
+  就是以 AirPlay 24-bit/48 kHz 傳送（[Digital Trends](https://digitaltrends.com/?p=3278297)）。
+- 代價：buffered 模式需要傳送端提供 PTP 時鐘、以 TCP 送 ALAC 幀、自行編碼 24-bit ALAC；pyatv 完全沒有這些。
+  這與第 2 節的多房間 PTP 是同一套工程，做一次可同時得到「24/48 無損」與「毫秒級多房間同步」。
+- buffered 模式的最低延遲未知（shairport-sync 文件只說「很短的延遲後開始播」），需實測。
+
+碼表來源：[airplay2-rs AIRPLAY_2_SPEC.md](https://github.com/lmcgartland/airplay2-rs/blob/master/AIRPLAY_2_SPEC.md)、
+[SteeBono airplayreceiver wiki](https://github.com/SteeBono/airplayreceiver/wiki/AirPlay2-Protocol)；位元 33 以上無公開對照。
+
 ## 4. 其他待辦
 
 - MMCSS「Pro Audio」排程給擷取與傳送執行緒（穩定度）。
