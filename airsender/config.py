@@ -94,13 +94,13 @@ class Config:
     # 延遲相關
     # 使用模式與各模式對應的延遲預設組
     mode: str = "game"  # game / music
-    game_preset: str = "較低（約 220 ms）"
+    game_preset: str = "較低（約 130 ms）"
     music_preset: str = "標準（約 250 ms）"
     # 各模式的傳輸方式（見 TRANSPORTS）：遊戲 / 影片預設 realtime，音樂預設 buffered
-    game_transport: str = "realtime"
+    game_transport: str = "buffered"
     music_transport: str = "buffered"
     buffered_bit_depth: int = 24  # buffered 串流的位元深度（HomePod 宣告支援 24）
-    receiver_latency_ms: int = 150  # 接收端緩衝（RTP 時間戳提前量）；預設三值 = 遊戲模式「較低」組
+    receiver_latency_ms: int = 75  # 接收端緩衝 / buffered 提前量；預設 = 遊戲模式 buffered「較低」組
     airplay_latency_min_ms: int = 25  # AirPlay 2 SETUP 的 latencyMin（HomePod 最小緩衝；pyatv 原本寫死 250）
     airplay_sample_rate: str = "auto"  # auto / 44100 / 48000；HomePod realtime 實測上限 48 kHz、16-bit 固定
     jitter_buffer_ms: int = 30  # 本機抖動緩衝（擷取 -> 傳送之間）
@@ -148,6 +148,12 @@ class Config:
         # 舊設定檔若仍是 10000（從未手動調整過的值），視為沿用新預設。
         if cfg.correction_f_high == 10000:
             cfg.correction_f_high = 500
+        # 0.11.0 的遊戲 / 影片模式預設是 realtime「較低」；0.11.1 起預設 buffered「較低」（實測更低延遲且 24-bit）。
+        # 舊設定檔若仍是未改過的 0.11.0 預設，視為沿用新預設；手動選過的組合不動。
+        if cfg.game_transport == "realtime" and cfg.game_preset == "較低（約 220 ms）" and "game_transport" in data:
+            cfg.game_transport, cfg.game_preset = "buffered", "較低（約 130 ms）"
+            if cfg.mode == "game":
+                cfg.receiver_latency_ms = BUFFERED_PRESETS[cfg.game_preset]
         return cfg
 
     def save(self) -> None:

@@ -84,7 +84,7 @@
 - buffered 封包的 SSRC 是格式碼：0x15000000 = ALAC 48 kHz / 24-bit（shairport-sync 從 Apple 傳送端學到的值）。
   44.1 kHz / 24-bit 的碼未知，所以 buffered 固定 48 kHz。
 - 延遲實測（提前量 → 端對端）：60 → 111 ms、75 → 127、100 → 149、350 → 400；50 與 25 ms 斷音。比 realtime 地板 140 ms 低。
-- 音樂模式預設 buffered「標準」（提前 200 ms ≈ 250 ms）；遊戲 / 影片模式維持 realtime，但控制面板可改成 buffered。
+- 音樂模式預設 buffered「標準」（提前 200 ms ≈ 250 ms）；遊戲 / 影片模式 0.11.1 起也預設 buffered「較低」（提前 75 ms ≈ 130 ms），控制面板可切回 realtime。
 
 碼表來源：[airplay2-rs AIRPLAY_2_SPEC.md](https://github.com/lmcgartland/airplay2-rs/blob/master/AIRPLAY_2_SPEC.md)、
 [SteeBono airplayreceiver wiki](https://github.com/SteeBono/airplayreceiver/wiki/AirPlay2-Protocol)；位元 33 以上無公開對照。

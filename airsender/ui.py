@@ -220,7 +220,7 @@ def help_icon(parent, text: str, ui: UiThread):
 
 HELP = {
     "mode": (
-        "遊戲 / 影片：預設 realtime 傳輸（16-bit）、「較低」組約 220 ms。\n"
+        "遊戲 / 影片：預設 buffered 傳輸、「較低」組約 130 ms。\n"
         "音樂：預設 buffered 傳輸（ALAC 24-bit / 48 kHz、PTP 時間錨）、「標準」組約 250 ms。\n"
         "兩個模式各自記住傳輸方式與延遲預設組，切換後自動重連。"
     ),
@@ -228,7 +228,7 @@ HELP = {
         "realtime：PCM 16-bit 走 UDP，本機抖動緩衝；HomePod mini 地板約 140 ms。\n"
         "buffered：ALAC 24-bit / 48 kHz 走 TCP，HomePod 依 PTP 時鐘在指定時刻播放；\n"
         "實測提前 60 ms → 總延遲 111 ms、75 → 127、100 → 149、350 → 400 ms，50 ms 以下斷音。\n"
-        "buffered 的延遲更低、位元深度更高；realtime 是較成熟的路徑，遇到問題可切回。"
+        "兩個模式預設都用 buffered；realtime 是較成熟的路徑，遇到問題可切回。"
     ),
     "latency": (
         "realtime：總延遲 ≈ HomePod 最小緩衝 + 接收端緩衝 + 抖動緩衝 + 約 15 ms，\n"
