@@ -13,7 +13,7 @@ from airsender import alac, buffered, ptp
 
 class PtpMessageTests(unittest.TestCase):
     def setUp(self):
-        self.cid = bytes.fromhex("a4cf99fffeb77a77")
+        self.cid = bytes.fromhex("001122fffe334455")
 
     def test_header_roundtrip_and_lengths(self):
         cases = {

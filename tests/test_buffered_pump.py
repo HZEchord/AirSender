@@ -20,7 +20,7 @@ class FakePtp:
     """固定偏移的 PTP：主時鐘 = 本機時鐘 − 1 秒。"""
 
     def __init__(self):
-        self.master_id = bytes.fromhex("a4cf99b8177c0008")
+        self.master_id = bytes.fromhex("0011223344556677")
         self.locked = True
         self.base = time.time_ns() - time.perf_counter_ns()
         self.offset = 1_000_000_000

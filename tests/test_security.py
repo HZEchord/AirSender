@@ -60,7 +60,7 @@ class UpdaterTests(unittest.TestCase):
 class PtpSpoofTests(unittest.TestCase):
     def setUp(self):
         self.clock = ptp.PtpClock("10.0.0.9", local_ip="10.0.0.2")
-        self.master = bytes.fromhex("a4cf99b8177c0008")
+        self.master = bytes.fromhex("0011223344556677")
         self.other = bytes.fromhex("deadbeefdeadbeef")
 
     def _feed(self, data: bytes, port=ptp.PORT_EVENT, ip="10.0.0.9"):
