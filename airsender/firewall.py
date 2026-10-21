@@ -59,19 +59,29 @@ def rules_present() -> bool:
 
 
 def add_rules() -> bool:
-    """以 UAC 提權執行 netsh 加入入站允許規則。回傳是否成功啟動提權程序。"""
-    cmds = [f'netsh advfirewall firewall delete rule name="{RULE_NAME}"']
+    """以 UAC 提權執行 netsh 加入入站允許規則（只限本機子網）。回傳是否成功啟動提權程序。
+
+    指令寫進私有暫存資料夾的 .cmd 再執行，路徑中的 % 加倍，避免 cmd 展開環境變數。
+    """
+    import tempfile  # pylint: disable=import-outside-toplevel
+
+    def q(path: str) -> str:
+        return '"' + path.replace("%", "%%") + '"'
+
+    lines = ["@echo off", f'netsh advfirewall firewall delete rule name="{RULE_NAME}"']
     for program in programs():
-        cmds.append(
+        lines.append(
             f'netsh advfirewall firewall add rule name="{RULE_NAME}" dir=in action=allow '
-            f'program="{program}" enable=yes profile=any'
+            f"program={q(program)} enable=yes profile=any remoteip=localsubnet"
         )
-    params = "/c " + " & ".join(cmds)
+    script_dir = Path(tempfile.mkdtemp(prefix="airsender-fw-"))
+    script = script_dir / "firewall.cmd"
+    script.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
     try:
         import ctypes  # pylint: disable=import-outside-toplevel
 
         ret = ctypes.windll.shell32.ShellExecuteW(  # type: ignore[attr-defined]
-            None, "runas", "cmd.exe", params, None, 0
+            None, "runas", "cmd.exe", f'/c "{script}"', None, 0
         )
         ok = ret > 32
         if not ok:

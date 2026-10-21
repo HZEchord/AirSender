@@ -17,7 +17,13 @@ from .live_source import LiveAudioSource
 
 _LOGGER = logging.getLogger(__name__)
 
-_state = {"latency_ms": 1500, "latency_min_ms": 250, "latency_max_ms": 2000, "sample_rate": None, "applied": False}
+_state = {
+    "latency_ms": 1500,
+    "latency_min_ms": 250,
+    "latency_max_ms": 2000,
+    "sample_rate": None,
+    "applied": False,
+}
 _stats = {"retransmit_requests": 0, "retransmit_packets": 0}
 
 
@@ -71,9 +77,7 @@ def apply() -> None:
     def patched_reset(self: StreamContext) -> None:
         original_reset(self)
         self.latency = latency_frames(self.sample_rate)
-        _LOGGER.debug(
-            "接收端延遲設為 %d frames（%d ms）", self.latency, _state["latency_ms"]
-        )
+        _LOGGER.debug("接收端延遲設為 %d frames（%d ms）", self.latency, _state["latency_ms"])
 
     StreamContext.reset = patched_reset  # type: ignore[assignment]
 
@@ -96,7 +100,9 @@ def apply() -> None:
                 stream["latencyMax"] = max(
                     stream["latencyMin"], int(sample_rate * _state["latency_max_ms"] / 1000)
                 )
-                _LOGGER.debug("SETUP latencyMin=%d latencyMax=%d frames", stream["latencyMin"], stream["latencyMax"])
+                _LOGGER.debug(
+                    "SETUP latencyMin=%d latencyMax=%d frames", stream["latencyMin"], stream["latencyMax"]
+                )
         return await original_setup(self, headers=headers, body=body)
 
     RtspSession.setup = patched_setup  # type: ignore[assignment]

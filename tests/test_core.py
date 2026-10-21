@@ -75,7 +75,9 @@ class SinkHelperTests(unittest.TestCase):
         dev = parse_server("192.168.1.10")
         self.assertEqual((dev.kind, dev.address, dev.url), ("snapcast", "192.168.1.10", "4953"))
         dev = parse_server("pi.local:5000")
-        self.assertEqual((dev.address, dev.url, dev.identifier), ("pi.local", "5000", "snapcast:pi.local:5000"))
+        self.assertEqual(
+            (dev.address, dev.url, dev.identifier), ("pi.local", "5000", "snapcast:pi.local:5000")
+        )
         with self.assertRaises(ValueError):
             parse_server("host:abc")
 

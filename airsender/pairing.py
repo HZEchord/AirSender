@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
+import secrets
 from collections.abc import Awaitable, Callable
 from typing import Optional
 
@@ -44,7 +44,7 @@ async def pair_protocol(
                 return None
             pairing.pin(int(pin.strip()))
         else:
-            pin = random.randint(1000, 9999)
+            pin = 1000 + secrets.randbelow(9000)
             pairing.pin(pin)
             notify(f"請在 {conf.name} 上輸入 PIN：{pin}")
         await pairing.finish()

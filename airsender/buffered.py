@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import plistlib
-import random
+import secrets
 import socket
 import struct
 import time
@@ -120,11 +120,11 @@ class BufferedAirPlayStream:
         self._event_transport = None
         self._control_transport = None
         self._writer: Optional[asyncio.StreamWriter] = None
-        self._shk = random.randbytes(32)
+        self._shk = secrets.token_bytes(32)
         self._cipher = ChaCha20Poly1305Reusable(self._shk)
         self._nonce_counter = 0
-        self._seq = random.randrange(1 << 23)
-        self._rtp_time = random.randrange(1 << 32)
+        self._seq = secrets.randbelow(1 << 23)
+        self._rtp_time = secrets.randbelow(1 << 32)
         self._ssrc = SSRC_FORMAT.get((sample_rate, bit_depth), 0)
         self._anchor_rtp: Optional[int] = None
         self._anchor_master_ns: Optional[int] = None
@@ -143,7 +143,10 @@ class BufferedAirPlayStream:
             await self._rtsp.set_parameter("volume", f"{db:.6f}")
 
     def _due_ns(self, rtp_time: int) -> int:
-        return self._anchor_master_ns + ((rtp_time - self._anchor_rtp) & 0xFFFFFFFF) * 1_000_000_000 // self.sample_rate
+        return (
+            self._anchor_master_ns
+            + ((rtp_time - self._anchor_rtp) & 0xFFFFFFFF) * 1_000_000_000 // self.sample_rate
+        )
 
     def next_play_lead_ms(self) -> Optional[float]:
         """下一個要送的封包距離播放時刻還有多久（主時鐘）。"""
@@ -153,7 +156,7 @@ class BufferedAirPlayStream:
 
     # ------------------------------------------------------------ 主流程
     async def run(self) -> None:
-        self._conn = await http_connect(self.address, self.port)
+        self._conn = await asyncio.wait_for(http_connect(self.address, self.port), 10.0)
         self._rtsp = RtspSession(self._conn)
         local_ip = self._conn.local_ip
         self.ptp = PtpClock(self.address, local_ip=local_ip)
@@ -172,7 +175,9 @@ class BufferedAirPlayStream:
             data_port, control_port = await self._setup_stream()
             _LOGGER.info("串流 SETUP 完成：dataPort %d controlPort %d", data_port, control_port)
 
-            reader, self._writer = await asyncio.open_connection(self.address, data_port)
+            reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(self.address, data_port), 10.0
+            )
             sock = self._writer.get_extra_info("socket")
             if sock is not None:
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -215,7 +220,9 @@ class BufferedAirPlayStream:
                 "ID": local_ip,
                 "SupportsClockPortMatchingOverride": True,
             },
-            "timingPeerList": [{"Addresses": [local_ip], "ID": local_ip, "SupportsClockPortMatchingOverride": True}],
+            "timingPeerList": [
+                {"Addresses": [local_ip], "ID": local_ip, "SupportsClockPortMatchingOverride": True}
+            ],
         }
         resp = await self._rtsp.setup(body=body)
         if resp.code != 200:
@@ -228,8 +235,17 @@ class BufferedAirPlayStream:
         retries = 5
         while True:
             try:
-                self._event_transport, _ = await setup_channel(
-                    EventChannel, verifier, self.address, event_port, EVENTS_SALT, EVENTS_READ_INFO, EVENTS_WRITE_INFO
+                self._event_transport, _ = await asyncio.wait_for(
+                    setup_channel(
+                        EventChannel,
+                        verifier,
+                        self.address,
+                        event_port,
+                        EVENTS_SALT,
+                        EVENTS_READ_INFO,
+                        EVENTS_WRITE_INFO,
+                    ),
+                    10.0,
                 )
                 return
             except ConnectionRefusedError:
@@ -344,7 +360,9 @@ class BufferedAirPlayStream:
 
     # ------------------------------------------------------------ 封包
     def _packet(self, payload: bytes) -> bytes:
-        header = struct.pack(">III", 0x80000000 | (self._seq & 0x7FFFFF), self._rtp_time & 0xFFFFFFFF, self._ssrc)
+        header = struct.pack(
+            ">III", 0x80000000 | (self._seq & 0x7FFFFF), self._rtp_time & 0xFFFFFFFF, self._ssrc
+        )
         nonce8 = self._nonce_counter.to_bytes(8, "little")
         self._nonce_counter += 1
         encrypted = self._cipher.encrypt(b"\x00" * 4 + nonce8, payload, header[4:12])  # ct ‖ tag
@@ -390,7 +408,10 @@ class BufferedAirPlayStream:
             first = src.pop_frames_timed(FRAMES_PER_PACKET)
             if first is None:
                 if loop.time() > deadline:
-                    first = (bytes(FRAMES_PER_PACKET * src.frame_size), time.perf_counter_ns())  # 沒聲音：以靜音開始
+                    first = (
+                        bytes(FRAMES_PER_PACKET * src.frame_size),
+                        time.perf_counter_ns(),
+                    )  # 沒聲音：以靜音開始
                     break
                 await asyncio.sleep(0.002)
         if first is None:
@@ -404,7 +425,10 @@ class BufferedAirPlayStream:
         self._send_frame(np.frombuffer(data, dtype=dtype).reshape(-1, 2))
         _LOGGER.info(
             "錨定：rtpTime %d = 擷取時刻 + %d ms（擷取到送出 %.1f ms，PTP %s）",
-            self._anchor_rtp, self.lead_ms, (self.ptp.clock.now_ns() - cap_local) / 1e6, self.ptp.summary(),
+            self._anchor_rtp,
+            self.lead_ms,
+            (self.ptp.clock.now_ns() - cap_local) / 1e6,
+            self.ptp.summary(),
         )
         src.mark_started()
         if self.on_streaming:
@@ -413,7 +437,9 @@ class BufferedAirPlayStream:
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("on_streaming 回呼失敗")
 
-        fill_trigger_ns = lead_ns - 2 * packet_ns  # 下一個封包的播放時刻逼近到提前量少兩個封包 → 來源停了，補靜音
+        fill_trigger_ns = (
+            lead_ns - 2 * packet_ns
+        )  # 下一個封包的播放時刻逼近到提前量少兩個封包 → 來源停了，補靜音
         last_log = time.monotonic()
         while not self._stop.is_set():
             sent_any = False
@@ -429,7 +455,9 @@ class BufferedAirPlayStream:
                     # 控制量：播放時刻 − 擷取時刻（目標 = 提前量）
                     value_ms = (due - self.ptp.to_master_ns(self.ptp.local_from_perf_ns(cap_ns))) / 1e6
                     controller.update(value_ms, loop.time())
-                    self.stats.lead_ms = (due - self.ptp.master_now_ns()) / 1e6  # HomePod 看到的提前量（送出時）
+                    self.stats.lead_ms = (
+                        due - self.ptp.master_now_ns()
+                    ) / 1e6  # HomePod 看到的提前量（送出時）
             # 來源沒資料（Windows 沒人播音）時補靜音讓時間軸連續，補到提前量為止；
             # 之後真實資料接上時，其播放時刻 − 擷取時刻仍約等於提前量
             lead = self.next_play_lead_ms()
@@ -444,7 +472,10 @@ class BufferedAirPlayStream:
                 if jit is not None:
                     self.stats.ptp_jitter_ms = jit / 1e6
             if sent_any:
-                await self._writer.drain()
+                try:
+                    await asyncio.wait_for(self._writer.drain(), 5.0)
+                except TimeoutError as exc:
+                    raise RuntimeError("接收端停止讀取音訊（5 秒），重新連線") from exc
             if reader.at_eof():
                 raise RuntimeError("接收端關閉了音訊連線")
             if time.monotonic() - last_log > 5.0:

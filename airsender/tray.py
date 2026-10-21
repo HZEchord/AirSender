@@ -20,7 +20,7 @@ from .config import Config, log_dir
 from .sinks import HTTP_PULL_KINDS, KIND_LABELS
 from .streamer import Device, State, Streamer
 from .ui import ControlPanel, QuickPanel, UiThread
-from .updater import Release, UpdateChecker, download, launch_installer
+from .updater import Release, UpdateChecker, download, expected_sha256, launch_installer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,9 +72,7 @@ class TrayApp:
         self.updater = UpdateChecker(self.config, self._on_update_available)
         self.streamer.rebuild_eq()  # 讓面板一開就顯示校正曲線與預衰
         self._update_busy = ""
-        self.icon = pystray.Icon(
-            APP_NAME, make_icon_image(False), APP_NAME, menu=Menu(self._menu_items)
-        )
+        self.icon = pystray.Icon(APP_NAME, make_icon_image(False), APP_NAME, menu=Menu(self._menu_items))
 
     # ------------------------------------------------------------ 執行
     def run(self) -> None:
@@ -96,8 +94,7 @@ class TrayApp:
                 "請在選單選「允許通過 Windows 防火牆」。"
             )
         self._rescan_async(
-            then_autostart=self.config.autostart_stream
-            and bool(self.config.device_identifier)
+            then_autostart=self.config.autostart_stream and bool(self.config.device_identifier)
         )
         if self.config.update_check_days > 0:
             self.updater.start()
@@ -142,7 +139,9 @@ class TrayApp:
         if st.state == State.STREAMING and cap and cap.running:
             src = st.source
             if src is not None:
-                lines.append(f"緩衝 {src.buffered_ms:.0f} ms　漂移 {src.drift_ppm:+.0f} ppm　{cap.source_rate} → {cap.target_rate} Hz")
+                lines.append(
+                    f"緩衝 {src.buffered_ms:.0f} ms　漂移 {src.drift_ppm:+.0f} ppm　{cap.source_rate} → {cap.target_rate} Hz"
+                )
             elif st.http.clients:
                 lines.append("HTTP 接收端：" + "、".join(st.http.clients))
         return lines
@@ -160,11 +159,7 @@ class TrayApp:
                 _LOGGER.info("找到 %d 個接收端", len(self.devices))
                 if then_autostart:
                     saved = next(
-                        (
-                            d
-                            for d in self.devices
-                            if d.identifier == self.config.device_identifier
-                        ),
+                        (d for d in self.devices if d.identifier == self.config.device_identifier),
                         None,
                     )
                     if saved is None and self.config.device_kind == "snapcast":
@@ -343,9 +338,7 @@ class TrayApp:
                     summary.append(f"成功：{', '.join(ok)}")
                 if failed:
                     summary.append(f"失敗：{', '.join(failed)}")
-                dialogs.show_info(
-                    f"{device.name} 配對結果\n" + ("\n".join(summary) or "沒有可配對的協定")
-                )
+                dialogs.show_info(f"{device.name} 配對結果\n" + ("\n".join(summary) or "沒有可配對的協定"))
             except Exception as exc:  # pylint: disable=broad-except
                 _LOGGER.warning("配對失敗：%s", exc)
                 dialogs.show_info(f"配對失敗：{exc}")
@@ -361,9 +354,7 @@ class TrayApp:
             return
 
         def worker() -> None:
-            password = dialogs.ask_string(
-                f"請輸入 {device.name} 的 AirPlay 密碼（留空以清除）", secret=True
-            )
+            password = dialogs.ask_string(f"請輸入 {device.name} 的 AirPlay 密碼（留空以清除）", secret=True)
             if password is None:
                 return
             self.streamer.set_password(device, password or None)
@@ -435,7 +426,11 @@ class TrayApp:
             for pos in range(positions):
                 if positions > 1:
                     dialogs.show_info(f"請把麥克風放到第 {pos + 1}/{positions} 個聆聽位置，按確定開始量測")
-                d, snr, lat = cal.measure_position(lambda msg, frac, pos=pos: progress(f"位置 {pos + 1}/{positions}：{msg}", (pos + frac) / positions))
+                d, snr, lat = cal.measure_position(
+                    lambda msg, frac, pos=pos: progress(
+                        f"位置 {pos + 1}/{positions}：{msg}", (pos + frac) / positions
+                    )
+                )
                 dbs.append(d)
                 snrs.append(snr)
                 lats.append(lat)
@@ -538,7 +533,7 @@ class TrayApp:
             path = download(release, progress)
             self._update_busy = "啟動安裝程式…"
             self.panel.refresh()
-            if not launch_installer(path):
+            if not launch_installer(path, expected_sha256(release)):
                 raise RuntimeError("無法啟動安裝程式（可能已取消 UAC）")
             # 安裝程式會關閉本程式並在完成後重新啟動；主動結束比較乾淨
             self._quit()
@@ -581,7 +576,11 @@ class TrayApp:
 
     def _remove_snapcast(self, spec: str) -> None:
         self.streamer.remove_snapcast_server(spec)
-        self.devices = [d for d in self.devices if not (d.kind == "snapcast" and d.identifier.endswith(spec if ":" in spec else f"{spec}:4953"))]
+        self.devices = [
+            d
+            for d in self.devices
+            if not (d.kind == "snapcast" and d.identifier.endswith(spec if ":" in spec else f"{spec}:4953"))
+        ]
         self._update_menu()
 
     def _quit(self) -> None:
@@ -611,10 +610,12 @@ class TrayApp:
                 yield MenuItem(
                     "    " + d.label,
                     _call(self._select_device, d),
-                    checked=_check(lambda dev=d: (
-                        self.streamer.device is not None
-                        and self.streamer.device.identifier == dev.identifier
-                    )),
+                    checked=_check(
+                        lambda dev=d: (
+                            self.streamer.device is not None
+                            and self.streamer.device.identifier == dev.identifier
+                        )
+                    ),
                     radio=True,
                 )
         yield Menu.SEPARATOR
@@ -622,7 +623,6 @@ class TrayApp:
         yield MenuItem("新增 Snapcast 伺服器…", _call(self._add_snapcast))
         for spec in list(self.config.snapcast_servers):
             yield MenuItem(f"移除 Snapcast {spec}", _call(self._remove_snapcast, spec))
-
 
     def _menu_items(self):
         """右鍵選單只留最常用的；左鍵（預設項目）開快捷面板，其餘設定在控制面板。"""

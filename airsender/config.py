@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Optional
 
-from . import APP_NAME
+from . import APP_NAME, secretstore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ class Config:
 
     # 非 AirPlay 輸出
     http_port: int = 8765  # HTTP WAV 串流伺服器（Google Cast / DLNA 由此拉流）
+    http_allow_any_client: bool = False  # HTTP 串流只接受目前選擇的接收端；設 True 才開放區網任何播放器
     snapcast_servers: list[str] = field(default_factory=list)  # "host" 或 "host:port"
 
     # 延遲相關
@@ -132,6 +134,8 @@ class Config:
     latency_measured: dict[str, dict] = field(default_factory=dict)
     autostart_stream: bool = False  # 程式啟動後自動連到上次的裝置
     mute_local_output: bool = False  # 串流中把電腦的輸出端點靜音（硬體靜音的裝置 loopback 不受影響）
+    idle_standby_minutes: int = 10  # 連續無聲這麼久就斷線待命（0 = 不待命），有聲音再自動連回
+    config_version: int = 0  # 設定檔格式版本；load() 依 MIGRATIONS 逐版升級後寫成 CONFIG_VERSION
     capture_device_index: Optional[int] = None  # None = 跟隨 Windows 預設輸出裝置
     log_level: str = "INFO"
 
@@ -145,28 +149,79 @@ class Config:
         except (OSError, ValueError) as exc:
             _LOGGER.warning("無法讀取設定檔 %s：%s，改用預設值", path, exc)
             return cls()
-        known = {f.name for f in fields(cls)}
-        cfg = cls(**{k: v for k, v in data.items() if k in known})
-        # 0.7.0 的預設修正上限是 10 kHz；實機證明高頻不該修，0.7.2 起預設 500 Hz。
-        # 舊設定檔若仍是 10000（從未手動調整過的值），視為沿用新預設。
-        if cfg.correction_f_high == 10000:
-            cfg.correction_f_high = 500
-        # 0.11.0 的遊戲 / 影片模式預設是 realtime「較低」；0.11.1 起預設 buffered「較低」（實測更低延遲且 24-bit）。
-        # 舊設定檔若仍是未改過的 0.11.0 預設，視為沿用新預設；手動選過的組合不動。
-        if cfg.game_transport == "realtime" and cfg.game_preset == "較低（約 220 ms）" and "game_transport" in data:
-            cfg.game_transport, cfg.game_preset = "buffered", "較低（約 130 ms）"
-            if cfg.mode == "game":
-                cfg.receiver_latency_ms = BUFFERED_PRESETS[cfg.game_preset]
+        if not isinstance(data, dict):
+            _LOGGER.warning("設定檔 %s 格式不對，改用預設值", path)
+            return cls()
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Config:
+        """由設定檔內容建立；先依版本跑遷移，再丟掉未知欄位與型別不符的值。"""
+        data = migrate(dict(data))
+        known = {f.name: f for f in fields(cls)}
+        defaults = cls()
+        clean: dict[str, object] = {}
+        for key, value in data.items():
+            if key not in known:
+                continue
+            default = getattr(defaults, key)
+            # 型別防呆：bool / int / float / str / dict 與預設值不同型別就忽略（None 允許給 Optional 欄位）
+            if value is not None and default is not None and not isinstance(value, type(default)):
+                if isinstance(default, float) and isinstance(value, int) and not isinstance(value, bool):
+                    value = float(value)
+                else:
+                    _LOGGER.warning("設定 %s 的值 %r 型別不對，改用預設值", key, value)
+                    continue
+            clean[key] = value
+        cfg = cls(**clean)
+        cfg.config_version = CONFIG_VERSION
+        cfg.credentials = secretstore.unprotect_credentials(cfg.credentials)
         return cfg
 
     def save(self) -> None:
         path = config_path()
+        data = asdict(self)
+        data["credentials"] = secretstore.protect_credentials(self.credentials)  # 憑證以 DPAPI 加密落地
         try:
-            path.write_text(
-                json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as exc:
             _LOGGER.warning("無法寫入設定檔 %s：%s", path, exc)
+
+
+# ------------------------------------------------------------------ 設定檔遷移
+# 每一筆 (版本, 函式)：把 raw dict 從「版本 − 1」升到「版本」。新的預設值變更一律寫在這裡，不要散在 load() 裡。
+CONFIG_VERSION = 2
+
+
+def _migrate_1(data: dict) -> None:
+    # 0.7.0 的預設修正上限是 10 kHz；實機證明高頻不該修，0.7.2 起預設 500 Hz。
+    # 舊設定檔若仍是 10000（從未手動調整過的值），視為沿用新預設。
+    if data.get("correction_f_high") == 10000:
+        data["correction_f_high"] = 500
+
+
+def _migrate_2(data: dict) -> None:
+    # 0.11.0 的遊戲 / 影片模式預設是 realtime「較低」；0.11.1 起預設 buffered「較低」（實測更低延遲且 24-bit）。
+    # 舊設定檔若仍是未改過的 0.11.0 預設，視為沿用新預設；手動選過的組合不動。
+    if data.get("game_transport") == "realtime" and data.get("game_preset") == "較低（約 220 ms）":
+        data["game_transport"], data["game_preset"] = "buffered", "較低（約 130 ms）"
+        if data.get("mode", "game") == "game":
+            data["receiver_latency_ms"] = BUFFERED_PRESETS[data["game_preset"]]
+
+
+MIGRATIONS: list[tuple[int, Callable[[dict], None]]] = [(1, _migrate_1), (2, _migrate_2)]
+
+
+def migrate(data: dict) -> dict:
+    """依 config_version 逐版套用遷移；沒有版本號的舊檔視為 0。"""
+    version = data.get("config_version")
+    version = int(version) if isinstance(version, int) and not isinstance(version, bool) else 0
+    for target, fn in MIGRATIONS:
+        if version < target:
+            fn(data)
+            version = target
+    data["config_version"] = CONFIG_VERSION
+    return data
 
 
 def mode_transport(cfg: Config, mode: str) -> str:

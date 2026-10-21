@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Optional
@@ -22,6 +23,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # 可變速率模式允許的最大比率調整（±0.2%）；實際由 DriftController 限制在更小範圍
 MAX_RATE_ADJUST = 0.002
+
+
+SILENCE_THRESHOLD = 1e-4  # 約 -80 dBFS；低於此視為無聲
 
 
 @dataclass
@@ -38,6 +42,7 @@ class CaptureStatus:
     frames_captured: int = field(default=0)
     bitperfect_blocks: int = 0  # 區塊已是 16-bit 整數值，直接通過（未加 dither）
     dithered_blocks: int = 0
+    last_sound_monotonic: float = 0.0  # 最近一次收到非靜音資料的 time.monotonic()（無聲待命用）
 
 
 def _co_initialize() -> bool:
@@ -127,9 +132,7 @@ class WasapiLoopbackCapture:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._run, name="wasapi-loopback", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="wasapi-loopback", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -304,6 +307,8 @@ class WasapiLoopbackCapture:
             x *= 1.0 / 32768.0
         if x.size == 0:
             return
+        if float(np.abs(x).max()) > SILENCE_THRESHOLD:
+            self.status.last_sound_monotonic = time.monotonic()
         x = x.reshape(-1, channels)
         if channels == 1:
             x = np.repeat(x, 2, axis=1)
@@ -320,9 +325,7 @@ class WasapiLoopbackCapture:
             adj = 0.0
             if self.rate_adjust is not None:
                 adj = max(-MAX_RATE_ADJUST, min(MAX_RATE_ADJUST, self.rate_adjust()))
-            drift_stage.set_io_ratio(
-                self.target_rate * (1.0 + adj), self.target_rate, x.shape[0]
-            )
+            drift_stage.set_io_ratio(self.target_rate * (1.0 + adj), self.target_rate, x.shape[0])
             x = drift_stage.resample_chunk(x)
             if x.size == 0:
                 return

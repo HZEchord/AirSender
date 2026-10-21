@@ -43,7 +43,9 @@ def main() -> int:
     ap.add_argument("--sweeps", type=int, default=3)
     ap.add_argument("--volume", type=int, default=None, help="校正時接收端音量（預設不更動）")
     ap.add_argument("--show", action="store_true", help="只顯示目前校正檔")
-    ap.add_argument("--verify", action="store_true", help="EQ 開啟下再量一次，與校正檔比較殘差（驗證校正效果）")
+    ap.add_argument(
+        "--verify", action="store_true", help="EQ 開啟下再量一次，與校正檔比較殘差（驗證校正效果）"
+    )
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     setup_logging("DEBUG" if args.verbose else "INFO", console=True)
@@ -80,13 +82,22 @@ def main() -> int:
                 return 1
             roomcal.ENGINE.bypass = False  # EQ 開啟
             d, snr, lat = cal.measure_position(lambda msg, frac: print(f"  {msg}", flush=True))
-            after = roomcal.Calibrator.finalize([d], mic_cal=roomcal.load_mic_calibration(cfg.mic_calibration_file))
+            after = roomcal.Calibrator.finalize(
+                [d], mic_cal=roomcal.load_mic_calibration(cfg.mic_calibration_file)
+            )
             before = np.asarray(profile.measured_db)
             from airsender import dsp  # pylint: disable=import-outside-toplevel
 
             corr = dsp.correction_curve(
-                roomcal.GRID, before, strength=cfg.correction_strength / 100.0, bass_boost_db=float(cfg.bass_boost_db),
-                limits=dsp.CorrectionLimits(float(cfg.correction_f_low), float(cfg.correction_f_high), float(cfg.correction_max_boost_db)),
+                roomcal.GRID,
+                before,
+                strength=cfg.correction_strength / 100.0,
+                bass_boost_db=float(cfg.bass_boost_db),
+                limits=dsp.CorrectionLimits(
+                    float(cfg.correction_f_low),
+                    float(cfg.correction_f_high),
+                    float(cfg.correction_max_boost_db),
+                ),
             )
             curves = {"result": before + corr}
             if not roomcal.ENGINE.active:
@@ -99,7 +110,9 @@ def main() -> int:
                 print(f"{f0:8d}  {before[i]:+7.1f}  {curves['result'][i]:+7.1f}  {after[i]:+7.1f}")
             dev_before = np.sqrt(np.mean(before[band] ** 2))
             dev_after = np.sqrt(np.mean(after[band] ** 2))
-            print(f"\n{int(roomcal.GRID[band][0])}–{cfg.correction_f_high} Hz 偏離平坦的 RMS：校正前 {dev_before:.1f} dB → 校正後 {dev_after:.1f} dB")
+            print(
+                f"\n{int(roomcal.GRID[band][0])}–{cfg.correction_f_high} Hz 偏離平坦的 RMS：校正前 {dev_before:.1f} dB → 校正後 {dev_after:.1f} dB"
+            )
             return 0
         roomcal.ENGINE.bypass = True
         dbs, snrs, lats = [], [], []

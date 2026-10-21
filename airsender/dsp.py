@@ -30,7 +30,9 @@ def exponential_sweep(fs: int, seconds: float = 6.0, f1: float = 20.0, f2: float
     return sweep, inv
 
 
-def impulse_response(recording: np.ndarray, inverse: np.ndarray, fs: int, search_from: float = 0.0, search_to: float = 3.0):
+def impulse_response(
+    recording: np.ndarray, inverse: np.ndarray, fs: int, search_from: float = 0.0, search_to: float = 3.0
+):
     """錄音與反濾波器摺積得到脈衝響應；回傳 (ir, peak_index)。
 
     search_from/search_to：在摺積結果中尋找直達聲峰值的時間範圍（秒，相對於掃頻開始）。"""
@@ -48,7 +50,9 @@ def impulse_response(recording: np.ndarray, inverse: np.ndarray, fs: int, search
 # ---------------------------------------------------------------- 頻率響應
 
 
-def magnitude_response(ir: np.ndarray, peak: int, fs: int, nfft: int = 65536) -> tuple[np.ndarray, np.ndarray]:
+def magnitude_response(
+    ir: np.ndarray, peak: int, fs: int, nfft: int = 65536
+) -> tuple[np.ndarray, np.ndarray]:
     """頻率相依視窗（FDW）的量值響應（dB）。
 
     低頻（< 200 Hz）用 500 ms 視窗把房間駐波算進去（這是低音感的來源）；
@@ -76,7 +80,9 @@ def magnitude_response(ir: np.ndarray, peak: int, fs: int, nfft: int = 65536) ->
     return freqs, (1 - mix) * long_db + mix * short_db
 
 
-def smooth_octave(freqs: np.ndarray, db: np.ndarray, fraction: float = 3.0, f_min: float = 20.0) -> np.ndarray:
+def smooth_octave(
+    freqs: np.ndarray, db: np.ndarray, fraction: float = 3.0, f_min: float = 20.0
+) -> np.ndarray:
     """1/fraction 八度平滑（在功率域平均）。"""
     out = np.array(db, dtype=float)
     power = 10 ** (db / 10.0)
@@ -141,7 +147,9 @@ def correction_curve(
     return corr
 
 
-def minimum_phase_fir(freqs: np.ndarray, gain_db: np.ndarray, fs: int, n_taps: int = 4096) -> tuple[np.ndarray, float]:
+def minimum_phase_fir(
+    freqs: np.ndarray, gain_db: np.ndarray, fs: int, n_taps: int = 4096
+) -> tuple[np.ndarray, float]:
     """由目標量值（dB）產生最小相位 FIR（倒頻譜法）。
 
     回傳 (taps, pre_gain_db)：taps 已乘上預先衰減，使濾波器最大增益為 0 dB（不會因 EQ 增益而削波）。"""
@@ -191,8 +199,15 @@ class FirProcessor:
             return x
         if n + self.n_taps - 1 > self.nfft:
             # 區塊比預期大：分段處理
-            return np.concatenate([self.process(x[i : i + self.nfft - self.n_taps + 1]) for i in range(0, n, self.nfft - self.n_taps + 1)])
-        y = np.fft.irfft(np.fft.rfft(x, self.nfft, axis=0) * self._h[:, None], self.nfft, axis=0)[: n + self.n_taps - 1]
+            return np.concatenate(
+                [
+                    self.process(x[i : i + self.nfft - self.n_taps + 1])
+                    for i in range(0, n, self.nfft - self.n_taps + 1)
+                ]
+            )
+        y = np.fft.irfft(np.fft.rfft(x, self.nfft, axis=0) * self._h[:, None], self.nfft, axis=0)[
+            : n + self.n_taps - 1
+        ]
         y[: self.n_taps - 1] += self._tail
         out = y[:n]
         # 更新尾巴：這一塊超出 n 的部分

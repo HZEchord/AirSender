@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import socket
 import struct
 from typing import Optional
 
 from aiohttp import web
 
-from . import APP_NAME, __version__
+from . import APP_NAME
 from .capture import WasapiLoopbackCapture
 from .config import Config
 from .roomcal import ENGINE
@@ -31,7 +32,9 @@ SAMPLE_BYTES = 2
 BYTES_PER_SECOND = SAMPLE_RATE * CHANNELS * SAMPLE_BYTES
 
 
-def wav_header(sample_rate: int = SAMPLE_RATE, channels: int = CHANNELS, sample_bytes: int = SAMPLE_BYTES) -> bytes:
+def wav_header(
+    sample_rate: int = SAMPLE_RATE, channels: int = CHANNELS, sample_bytes: int = SAMPLE_BYTES
+) -> bytes:
     """長度未知的 WAV 標頭（RIFF / data 大小填 0xFFFFFFFF，是即時串流的慣例，各家接收端都接受）。"""
     block_align = channels * sample_bytes
     return b"".join(
@@ -40,7 +43,16 @@ def wav_header(sample_rate: int = SAMPLE_RATE, channels: int = CHANNELS, sample_
             struct.pack("<I", 0xFFFFFFFF),
             b"WAVE",
             b"fmt ",
-            struct.pack("<IHHIIHH", 16, 1, channels, sample_rate, sample_rate * block_align, block_align, sample_bytes * 8),
+            struct.pack(
+                "<IHHIIHH",
+                16,
+                1,
+                channels,
+                sample_rate,
+                sample_rate * block_align,
+                block_align,
+                sample_bytes * 8,
+            ),
             b"data",
             struct.pack("<I", 0xFFFFFFFF),
         ]
@@ -130,25 +142,38 @@ class PcmBroadcaster:
 class HttpStreamServer:
     """aiohttp 伺服器：/stream.wav（WAV）、/stream.pcm（raw s16le）、/（狀態）。"""
 
+    MAX_CLIENTS = 8
+
     def __init__(self, loop: asyncio.AbstractEventLoop, broadcaster: PcmBroadcaster, port: int) -> None:
         self.loop = loop
         self.broadcaster = broadcaster
         self.port = port
         self._runner: Optional[web.AppRunner] = None
         self.clients: dict[str, int] = {}
+        # 安全：路徑含每次啟動隨機的 token（接收端只知道我們給它的 URL），且只接受允許的來源 IP
+        self.token = secrets.token_urlsafe(16)
+        self.allowed_ips: set[str] = set()
+        self.allow_any_client = False
+        self.bind_ip = "0.0.0.0"
 
-    async def start(self) -> None:
+    async def start(self, bind_ip: Optional[str] = None) -> None:
         if self._runner is not None:
             return
+        if bind_ip:
+            self.bind_ip = bind_ip
         app = web.Application()
-        app.router.add_get("/", self._index)
-        app.router.add_get("/stream.wav", self._stream_wav)
-        app.router.add_get("/stream.pcm", self._stream_pcm)
+        app.router.add_get(f"/{self.token}/stream.wav", self._stream_wav)
+        app.router.add_get(f"/{self.token}/stream.pcm", self._stream_pcm)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, "0.0.0.0", self.port, reuse_address=True)
+        site = web.TCPSite(self._runner, self.bind_ip, self.port, reuse_address=True)
         await site.start()
-        _LOGGER.info("HTTP 串流伺服器：port %d", self.port)
+        _LOGGER.info("HTTP 串流伺服器：%s:%d（路徑含 token，只接受允許的來源）", self.bind_ip, self.port)
+
+    def _client_allowed(self, request: web.Request) -> bool:
+        if self.allow_any_client:
+            return True
+        return bool(request.remote) and request.remote in self.allowed_ips
 
     async def stop(self) -> None:
         if self._runner is not None:
@@ -160,17 +185,8 @@ class HttpStreamServer:
         return self._runner is not None
 
     def url_for(self, target_ip: str, fmt: str = "wav") -> str:
-        return f"http://{local_ip_for(target_ip)}:{self.port}/stream.{fmt}"
-
-    async def _index(self, request: web.Request) -> web.Response:
-        return web.Response(
-            text=(
-                f"{APP_NAME} {__version__}\n"
-                f"WAV: /stream.wav  (audio/wav, {SAMPLE_RATE} Hz / 16-bit / {CHANNELS} ch)\n"
-                f"PCM: /stream.pcm  (audio/L16 little-endian)\n"
-                f"clients: {len(self.clients)}\n"
-            )
-        )
+        host = self.bind_ip if self.bind_ip != "0.0.0.0" else local_ip_for(target_ip)
+        return f"http://{host}:{self.port}/{self.token}/stream.{fmt}"
 
     async def _stream_wav(self, request: web.Request) -> web.StreamResponse:
         return await self._stream(request, "audio/wav", wav_header())
@@ -180,6 +196,11 @@ class HttpStreamServer:
 
     async def _stream(self, request: web.Request, content_type: str, header: bytes) -> web.StreamResponse:
         peer = request.remote or "?"
+        if not self._client_allowed(request):
+            _LOGGER.warning("HTTP 串流：拒絕未允許的來源 %s", peer)
+            raise web.HTTPForbidden()
+        if len(self.clients) >= self.MAX_CLIENTS:
+            raise web.HTTPServiceUnavailable()
         response = web.StreamResponse(
             status=200,
             headers={
@@ -190,7 +211,7 @@ class HttpStreamServer:
                 "transferMode.dlna.org": "Streaming",
                 "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000",
                 "Accept-Ranges": "none",
-                "icy-name": f"{APP_NAME} - {socket.gethostname()}",
+                "icy-name": APP_NAME,
             },
         )
         await response.prepare(request)

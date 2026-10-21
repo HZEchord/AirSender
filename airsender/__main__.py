@@ -1,8 +1,8 @@
 """命令列入口。
 
-  airsender                     啟動系統匣程式
-  airsender --list              列出網路上的 AirPlay 接收端
-  airsender --device 客廳 --headless   不開系統匣，直接串流到名稱含「客廳」的裝置（Ctrl+C 結束）
+airsender                     啟動系統匣程式
+airsender --list              列出網路上的 AirPlay 接收端
+airsender --device 客廳 --headless   不開系統匣，直接串流到名稱含「客廳」的裝置（Ctrl+C 結束）
 """
 
 from __future__ import annotations
@@ -24,11 +24,18 @@ def _parse_args(argv):
     parser.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
     parser.add_argument("--list", action="store_true", help="列出 AirPlay 接收端後結束")
     parser.add_argument("--device", help="接收端名稱（部分比對）或 IP")
-    parser.add_argument("--snapcast", metavar="HOST[:PORT]", help="直接推送到 snapserver 的 tcp 來源（預設 port 4953）")
+    parser.add_argument(
+        "--snapcast", metavar="HOST[:PORT]", help="直接推送到 snapserver 的 tcp 來源（預設 port 4953）"
+    )
     parser.add_argument("--headless", action="store_true", help="不顯示系統匣，直接串流")
     parser.add_argument("--latency", type=int, help="接收端緩衝毫秒數（100–2000，預設 150）")
     parser.add_argument("--jitter", type=int, help="本機抖動緩衝毫秒數（預設 40）")
-    parser.add_argument("--latency-min", type=int, dest="latency_min", help="HomePod 最小緩衝（AirPlay 2 latencyMin）毫秒數，25–250（預設 50）")
+    parser.add_argument(
+        "--latency-min",
+        type=int,
+        dest="latency_min",
+        help="HomePod 最小緩衝（AirPlay 2 latencyMin）毫秒數，25–250（預設 50）",
+    )
     parser.add_argument("--volume", type=int, help="接收端音量 0-100")
     parser.add_argument("--no-dither", action="store_true", help="關閉 TPDF dither")
     parser.add_argument("--quality", choices=["VHQ", "HQ", "MQ"], help="重取樣品質")
@@ -99,16 +106,12 @@ def main(argv=None) -> int:
             target = devices[0]
         elif args.device:
             key = args.device.lower()
-            target = next(
-                (d for d in devices if key in d.name.lower() or key == d.address), None
-            )
+            target = next((d for d in devices if key in d.name.lower() or key == d.address), None)
             if target is None:
                 print(f"找不到符合「{args.device}」的裝置。")
                 return 1
         elif config.device_identifier:
-            target = next(
-                (d for d in devices if d.identifier == config.device_identifier), None
-            )
+            target = next((d for d in devices if d.identifier == config.device_identifier), None)
         if target is None:
             target = devices[0]
 
@@ -121,11 +124,7 @@ def main(argv=None) -> int:
         while True:
             time.sleep(0.5)
             src = streamer.source
-            if (
-                streamer.state == State.STREAMING
-                and src
-                and time.monotonic() - last_report > 10
-            ):
+            if streamer.state == State.STREAMING and src and time.monotonic() - last_report > 10:
                 last_report = time.monotonic()
                 print(
                     f"  緩衝 {src.buffered_ms:.0f} ms，漂移補償 {src.drift_ppm:+.0f} ppm，"

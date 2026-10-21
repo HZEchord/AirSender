@@ -1,7 +1,7 @@
 ; Inno Setup 6 安裝腳本。由 build.ps1 呼叫；需先以 PyInstaller 產生 ..\dist\AirSender\。
 
 #define MyAppName "AirSender"
-#define MyAppVersion "0.13.0"
+#define MyAppVersion "0.14.0"
 #define MyAppPublisher "AirSender"
 #define MyAppExeName "AirSender.exe"
 
@@ -54,8 +54,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 ; 防火牆入站允許規則（需系統管理員；非管理員安裝時略過，可之後在程式選單中加入）
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#MyAppName}"""; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode; StatusMsg: "設定 Windows 防火牆..."
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#MyAppName}"" dir=in action=allow program=""{app}\{#MyAppExeName}"" enable=yes profile=any"; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode; StatusMsg: "設定 Windows 防火牆..."
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#MyAppName}"" dir=in action=allow program=""{app}\AirSenderCLI.exe"" enable=yes profile=any"; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode; StatusMsg: "設定 Windows 防火牆..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#MyAppName}"" dir=in action=allow program=""{app}\{#MyAppExeName}"" enable=yes profile=any remoteip=localsubnet"; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode; StatusMsg: "設定 Windows 防火牆..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""{#MyAppName}"" dir=in action=allow program=""{app}\AirSenderCLI.exe"" enable=yes profile=any remoteip=localsubnet"; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode; StatusMsg: "設定 Windows 防火牆..."
 Filename: "{app}\{#MyAppExeName}"; Description: "啟動 {#MyAppName}"; Flags: nowait postinstall skipifsilent
 ; 自動更新走靜默安裝：裝完以一般使用者權限重新啟動程式
 Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser; Check: WizardSilent

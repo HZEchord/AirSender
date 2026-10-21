@@ -15,6 +15,7 @@ import re
 import tempfile
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -29,7 +30,14 @@ _LOGGER = logging.getLogger(__name__)
 
 REPO = "HZEchord/AirSender"
 API_LATEST = "https://api.github.com/repos/{repo}/releases/latest"
-ASSET_PATTERN = re.compile(r"^AirSender-Setup-.*\.exe$", re.IGNORECASE)
+ASSET_PATTERN = re.compile(r"^AirSender-Setup-[A-Za-z0-9._-]+\.exe$", re.IGNORECASE)  # 不允許路徑字元
+ALLOWED_HOSTS = {
+    "github.com",
+    "api.github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+}
+MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
 USER_AGENT = f"{APP_NAME}/{__version__}"
 
 
@@ -91,44 +99,85 @@ def is_newer(release: Release, current: str = __version__) -> bool:
     return parse_version(release.version) > parse_version(current)
 
 
+def _check_url(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS:
+        raise RuntimeError(f"拒絕非 GitHub 的下載位址：{url[:80]}")
+
+
+def expected_sha256(release: Release) -> str:
+    """Release 必須帶 sha256 digest，否則拒絕安裝（fail closed）。"""
+    algo, _, expected = (release.digest or "").partition(":")
+    if algo.lower() != "sha256" or not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
+        raise RuntimeError(
+            "GitHub 沒有提供這個安裝程式的 SHA-256，為安全起見不自動安裝；請到 Release 頁面手動下載"
+        )
+    return expected.lower()
+
+
+def sha256_of(path: Path) -> str:
+    sha = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
 def download(release: Release, progress: Optional[Callable[[int, int], None]] = None) -> Path:
-    """下載安裝程式到暫存資料夾並驗證 SHA-256（GitHub 提供 digest 時）。"""
-    dest_dir = Path(tempfile.gettempdir()) / APP_NAME / "updates"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / release.asset_name
+    """下載安裝程式到新建的私有暫存資料夾並驗證 SHA-256；沒有 digest 一律拒絕。"""
+    expected = expected_sha256(release)
+    if not ASSET_PATTERN.match(release.asset_name) or Path(release.asset_name).name != release.asset_name:
+        raise RuntimeError("安裝程式檔名不合法")
     headers = {"User-Agent": USER_AGENT}
     url = release.asset_url
     token = os.environ.get("AIRSENDER_GITHUB_TOKEN")
     if token and release.asset_api_url:
         url = release.asset_api_url
+        if urllib.parse.urlparse(url).hostname != "api.github.com":
+            raise RuntimeError("拒絕把 token 送到非 api.github.com 的位址")
         headers["Authorization"] = f"Bearer {token}"
         headers["Accept"] = "application/octet-stream"
+    _check_url(url)
+    dest_dir = Path(tempfile.mkdtemp(prefix="AirSender-update-"))  # 每次新建，權限只有本使用者
+    dest = dest_dir / release.asset_name
     req = urllib.request.Request(url, headers=headers)
     sha = hashlib.sha256()
     done = 0
-    with urllib.request.urlopen(req, timeout=30) as resp, open(dest, "wb") as out:
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        if resp.geturl() and urllib.parse.urlparse(resp.geturl()).hostname not in ALLOWED_HOSTS:
+            raise RuntimeError("下載被轉向到非 GitHub 的位址")
         total = int(resp.headers.get("Content-Length") or release.asset_size or 0)
-        while True:
-            chunk = resp.read(256 * 1024)
-            if not chunk:
-                break
-            out.write(chunk)
-            sha.update(chunk)
-            done += len(chunk)
-            if progress:
-                progress(done, total)
-    if release.digest:
-        algo, _, expected = release.digest.partition(":")
-        if algo.lower() == "sha256" and sha.hexdigest().lower() != expected.lower():
-            dest.unlink(missing_ok=True)
-            raise RuntimeError("下載的安裝程式 SHA-256 與 GitHub 記錄不符，已刪除")
-    _LOGGER.info("已下載 %s（%d bytes）", dest, done)
+        if total > MAX_DOWNLOAD_BYTES:
+            raise RuntimeError("安裝程式大小異常，拒絕下載")
+        with open(dest, "xb") as out:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                done += len(chunk)
+                if done > MAX_DOWNLOAD_BYTES:
+                    raise RuntimeError("安裝程式大小異常，中止下載")
+                out.write(chunk)
+                sha.update(chunk)
+                if progress:
+                    progress(done, total)
+    if sha.hexdigest().lower() != expected:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError("下載的安裝程式 SHA-256 與 GitHub 記錄不符，已刪除")
+    _LOGGER.info("已下載 %s（%d bytes，SHA-256 相符）", dest, done)
     return dest
 
 
-def launch_installer(path: Path) -> bool:
-    """以 Inno Setup 靜默模式啟動安裝程式（會跳 UAC）；安裝完成後安裝程式會重新啟動 AirSender。"""
+def launch_installer(path: Path, expected_sha256_hex: Optional[str] = None) -> bool:
+    """以 Inno Setup 靜默模式啟動安裝程式（會跳 UAC）；安裝完成後安裝程式會重新啟動 AirSender。
+
+    啟動前再算一次 SHA-256，縮小「下載後、執行前」檔案被同一使用者的其他程式掉包的空窗。
+    """
     try:
+        if expected_sha256_hex and sha256_of(path).lower() != expected_sha256_hex.lower():
+            _LOGGER.error("安裝程式在啟動前被修改，拒絕執行：%s", path)
+            path.unlink(missing_ok=True)
+            return False
         import ctypes  # pylint: disable=import-outside-toplevel
 
         ret = ctypes.windll.shell32.ShellExecuteW(  # type: ignore[attr-defined]
@@ -212,4 +261,3 @@ def describe_last_check(config: Config) -> str:
         return dt.strftime("%Y-%m-%d %H:%M")
     except ValueError:
         return config.last_update_check
-

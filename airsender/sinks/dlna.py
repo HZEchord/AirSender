@@ -46,8 +46,18 @@ async def discover(timeout: float = 4.0) -> list[Device]:
     async def on_found(headers) -> None:
         location = headers.get("location")
         usn = headers.get("usn", "")
-        if location and location not in locations:
-            locations[location] = usn
+        if not location or location in locations:
+            return
+        parsed = urlparse(location)
+        remote = headers.get("_remote_addr")
+        remote_ip = remote[0] if isinstance(remote, tuple | list) and remote else None
+        # 只接受指向回應者自己的 http(s) 位址，避免任何區網主機讓我們去抓任意 URL
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return
+        if remote_ip and parsed.hostname != remote_ip:
+            _LOGGER.debug("忽略 LOCATION 指向別處的 SSDP 回應：%s 來自 %s", location, remote_ip)
+            return
+        locations[location] = usn
 
     try:
         await async_search(on_found, timeout=int(timeout), search_target=MEDIA_RENDERER)
@@ -100,9 +110,7 @@ async def run(
             await dmr.async_set_volume_level(volume / 100.0)
         if dmr.has_volume_level:
             set_volume_slot(
-                lambda pct: asyncio.run_coroutine_threadsafe(
-                    dmr.async_set_volume_level(pct / 100.0), loop
-                )
+                lambda pct: asyncio.run_coroutine_threadsafe(dmr.async_set_volume_level(pct / 100.0), loop)
             )
         _LOGGER.info("DLNA：%s 開始播放 %s", device.name, url)
         on_streaming()
@@ -114,7 +122,10 @@ async def run(
             except Exception as exc:  # pylint: disable=broad-except
                 raise RuntimeError(f"DLNA 接收端失去回應：{exc}") from exc
             state = dmr.transport_state
-            if state in (TransportState.STOPPED, TransportState.NO_MEDIA_PRESENT) and loop.time() - started > 8:
+            if (
+                state in (TransportState.STOPPED, TransportState.NO_MEDIA_PRESENT)
+                and loop.time() - started > 8
+            ):
                 raise RuntimeError(f"DLNA 接收端停止播放（{state.name if state else '?'}）")
     finally:
         set_volume_slot(None)

@@ -13,6 +13,7 @@ import asyncio
 import logging
 import socket
 import threading
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Optional
@@ -23,7 +24,7 @@ from pyatv.interface import MediaMetadata
 
 from . import APP_NAME, firewall, formats, localmute, pairing, patches, roomcal
 from .buffered import BufferedAirPlayStream, BufferedStats
-from .capture import CaptureStatus
+from .capture import CaptureStatus, WasapiLoopbackCapture
 from .config import Config
 from .httpstream import HttpStreamServer, PcmBroadcaster
 from .live_source import LiveAudioSource
@@ -54,6 +55,20 @@ def _enable_high_resolution_timer() -> None:
         _LOGGER.debug("無法設定計時器解析度：%s", exc)
 
 
+# HomePod /info 的 statusFlags：被其他來源占用時的位元（見 ROADMAP §3.5；量測後填入）
+BUSY_FLAG_MASK = 0x0
+BUSY_POLL_SECONDS = 10.0
+SLEEP_GAP_SECONDS = 30.0  # 事件迴圈停頓超過這麼久 = 系統睡眠過
+
+
+class _IdleStandby(Exception):
+    """無聲超過設定時間，進入待命。"""
+
+
+class _SystemResumed(Exception):
+    """系統從睡眠喚醒，重新連線。"""
+
+
 class Streamer:
     def __init__(
         self, config: Config, on_state: Optional[StateCallback] = None, *, persist: bool = True
@@ -65,9 +80,7 @@ class Streamer:
         # 曾測試 SelectorEventLoop（UDP 直接 sendto）與 Windows 預設 Proactor 的差異，
         # 在 125 封包/秒下 CPU 差異落在量測雜訊內（約 4–5% 單核心），故維持預設迴圈。
         self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(
-            target=self._loop.run_forever, name="stream-loop", daemon=True
-        )
+        self._thread = threading.Thread(target=self._loop.run_forever, name="stream-loop", daemon=True)
         self._task: Optional[asyncio.Task] = None
         self._atv = None
         self._source: Optional[LiveAudioSource] = None
@@ -76,6 +89,7 @@ class Streamer:
         self.broadcaster = PcmBroadcaster(self._loop, config)
         self.http = HttpStreamServer(self._loop, self.broadcaster, config.http_port)
         self.device: Optional[Device] = None
+        self._streaming_since = 0.0
         self.airplay_rate: int = 44100
         self.state = State.IDLE
         self.message = ""
@@ -91,7 +105,9 @@ class Streamer:
         """在背景執行緒靜音 / 還原擷取來源對應的輸出端點（不阻塞串流迴圈）。"""
         cap = self.capture_status
         name = cap.device_name if cap and cap.device_name else None
-        threading.Thread(target=localmute.set_muted, args=(muted, name), daemon=True, name="local-mute").start()
+        threading.Thread(
+            target=localmute.set_muted, args=(muted, name), daemon=True, name="local-mute"
+        ).start()
 
     def shutdown(self) -> None:
         with suppress(Exception):
@@ -198,9 +214,7 @@ class Streamer:
         """與 AirPlay 接收端配對（RAOP 與 AirPlay）。回傳各協定是否成功。會先停止串流，完成後恢復。"""
         if device.kind != "airplay":
             raise RuntimeError("只有 AirPlay 接收端需要配對")
-        fut = asyncio.run_coroutine_threadsafe(
-            self._pair(device, ask_pin, notify), self._loop
-        )
+        fut = asyncio.run_coroutine_threadsafe(self._pair(device, ask_pin, notify), self._loop)
         return fut.result(600)
 
     def set_password(self, device: Device, password: Optional[str]) -> None:
@@ -238,6 +252,8 @@ class Streamer:
 
     def _set_state(self, state: State, message: str = "") -> None:
         was_streaming = self.state == State.STREAMING
+        if state == State.STREAMING and not was_streaming:
+            self._streaming_since = time.monotonic()
         self.state = state
         self.message = message
         _LOGGER.info("狀態：%s %s", state.value, message)
@@ -372,23 +388,24 @@ class Streamer:
                     State.CONNECTING if attempt == 0 else State.RECONNECTING,
                     f"連線到 {device.name}",
                 )
-                if device.kind == "airplay":
-                    await self._run_airplay(device)
-                elif device.kind in HTTP_PULL_KINDS:
-                    await self._run_http_pull(device)
-                elif device.kind == "snapcast":
-                    await snapcast_sink.run(
-                        device,
-                        self.broadcaster,
-                        lambda: self._set_state(State.STREAMING, device.name),
-                    )
-                else:
-                    raise RuntimeError(f"不支援的接收端種類：{device.kind}")
+                await self._run_supervised(device)
                 attempt = 0
                 # 正常回傳代表接收端結束了串流（例如被其他來源接管）
+                if device.kind == "airplay" and await self._receiver_busy(device):
+                    await self._wait_while_busy(device)
+                    continue
                 self._set_state(State.RECONNECTING, "串流被接收端結束，重新連線")
             except asyncio.CancelledError:
                 raise
+            except _IdleStandby:
+                attempt = 0
+                await self._standby_until_sound(device)
+                continue
+            except _SystemResumed:
+                attempt = 0
+                self._set_state(State.RECONNECTING, "系統喚醒，重新連線")
+                await asyncio.sleep(2.0)
+                continue
             except Exception as exc:  # pylint: disable=broad-except
                 attempt += 1
                 _LOGGER.warning("串流失敗：%s", exc, exc_info=_LOGGER.isEnabledFor(logging.DEBUG))
@@ -398,6 +415,111 @@ class Streamer:
                 await asyncio.sleep(wait)
                 continue
             await asyncio.sleep(1.0)
+
+    async def _run_once_inner(self, device: Device) -> None:
+        if device.kind == "airplay":
+            await self._run_airplay(device)
+        elif device.kind in HTTP_PULL_KINDS:
+            await self._run_http_pull(device)
+        elif device.kind == "snapcast":
+            await snapcast_sink.run(
+                device,
+                self.broadcaster,
+                lambda: self._set_state(State.STREAMING, device.name),
+            )
+        else:
+            raise RuntimeError(f"不支援的接收端種類：{device.kind}")
+
+    async def _run_supervised(self, device: Device) -> None:
+        """執行一次串流，每 2 秒監看：無聲超時 → _IdleStandby；系統睡眠過 → _SystemResumed。"""
+        task = asyncio.ensure_future(self._run_once(device))
+        last_tick = time.monotonic()
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=2.0)
+                if done:
+                    return task.result()
+                now = time.monotonic()
+                if now - last_tick > SLEEP_GAP_SECONDS:
+                    _LOGGER.info("事件迴圈停頓 %.0f 秒，視為系統睡眠喚醒", now - last_tick)
+                    await self._cancel(task)
+                    raise _SystemResumed()
+                last_tick = now
+                if self._idle_timeout_reached(now):
+                    await self._cancel(task)
+                    raise _IdleStandby()
+        except asyncio.CancelledError:
+            await self._cancel(task)
+            raise
+
+    @staticmethod
+    async def _cancel(task: asyncio.Task) -> None:
+        if not task.done():
+            task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+
+    def _idle_timeout_reached(self, now: float) -> bool:
+        minutes = int(self.config.idle_standby_minutes or 0)
+        if minutes <= 0 or self.state != State.STREAMING:
+            return False
+        cap = self.capture_status
+        last = max(cap.last_sound_monotonic if cap else 0.0, self._streaming_since)
+        return now - last > minutes * 60
+
+    async def _standby_until_sound(self, device: Device) -> None:
+        """斷線待命：以一個只看「有沒有聲音」的擷取監看，有聲音就回傳（呼叫端重新連線）。"""
+        minutes = int(self.config.idle_standby_minutes or 0)
+        self._set_state(State.STANDBY, f"無聲 {minutes} 分鐘，已斷線待命；有聲音會自動連回 {device.name}")
+        watcher = WasapiLoopbackCapture(
+            lambda _data: None,
+            target_rate=48000,
+            device_index=self.config.capture_device_index,
+            quality=self.config.resample_quality,
+            dither=False,
+        )
+        started = time.monotonic()
+        try:
+            await self._loop.run_in_executor(None, watcher.start)
+            while True:
+                await asyncio.sleep(0.5)
+                if watcher.status.last_sound_monotonic > started:
+                    _LOGGER.info("偵測到聲音，結束待命")
+                    return
+        finally:
+            with suppress(Exception):
+                await self._loop.run_in_executor(None, watcher.stop)
+
+    async def _receiver_busy(self, device: Device) -> bool:
+        """接收端是否正被其他來源使用（GET /info 的 statusFlags）。不確定時回傳 False。"""
+        if not BUSY_FLAG_MASK:
+            return False
+        try:
+            from pyatv.const import Protocol as _P  # pylint: disable=import-outside-toplevel
+            from pyatv.support.http import http_connect  # pylint: disable=import-outside-toplevel
+            from pyatv.support.rtsp import RtspSession  # pylint: disable=import-outside-toplevel
+
+            conf = await self._find_airplay(device)
+            service = conf.get_service(_P.AirPlay) if conf else None
+            if conf is None or service is None:
+                return False
+            conn = await asyncio.wait_for(http_connect(str(conf.address), service.port), 5.0)
+            try:
+                info = await asyncio.wait_for(RtspSession(conn).info(), 5.0)
+            finally:
+                conn.close()
+            flags = int(info.get("statusFlags", 0) or 0)
+            return bool(flags & BUSY_FLAG_MASK)
+        except Exception as exc:  # pylint: disable=broad-except
+            _LOGGER.debug("查詢接收端狀態失敗：%s", exc)
+            return False
+
+    async def _wait_while_busy(self, device: Device) -> None:
+        """接收端被別的來源（例如手機）接管：靜默待命，每 10 秒查一次，釋放後才連回，不搶回來。"""
+        self._set_state(State.WAITING, f"{device.name} 正被其他來源使用，釋放後自動連回")
+        while await self._receiver_busy(device):
+            await asyncio.sleep(BUSY_POLL_SECONDS)
+        self._set_state(State.RECONNECTING, f"{device.name} 已釋放，重新連線")
 
     async def _explain_error(self, device: Device, message: str) -> str:
         lowered = message.lower()
@@ -436,7 +558,9 @@ class Streamer:
         rate = formats.choose_airplay_rate(self.config.airplay_sample_rate, source_rate)
         patches.set_sample_rate(rate)
         self.airplay_rate = rate
-        _LOGGER.info("AirPlay 取樣率 %d Hz（來源 %s Hz，設定 %s）", rate, source_rate, self.config.airplay_sample_rate)
+        _LOGGER.info(
+            "AirPlay 取樣率 %d Hz（來源 %s Hz，設定 %s）", rate, source_rate, self.config.airplay_sample_rate
+        )
         atv = await pyatv.connect(conf, self._loop, protocol=Protocol.RAOP)
         self._atv = atv
         try:
@@ -471,7 +595,9 @@ class Streamer:
         rate = 48000  # buffered 封包的格式碼只確認過 48 kHz / 24-bit（SSRC 0x15000000）
         self.airplay_rate = rate
         lead_ms = self.config.receiver_latency_ms
-        _LOGGER.info("buffered 串流：%d Hz / %d-bit，提前量 %d ms", rate, self.config.buffered_bit_depth, lead_ms)
+        _LOGGER.info(
+            "buffered 串流：%d Hz / %d-bit，提前量 %d ms", rate, self.config.buffered_bit_depth, lead_ms
+        )
         source = LiveAudioSource(
             jitter_ms=BufferedAirPlayStream.DEFAULT_PREFILL_MS,
             capture_device_index=self.config.capture_device_index,
@@ -507,7 +633,11 @@ class Streamer:
             self._source = None
 
     async def _run_http_pull(self, device: Device) -> None:
-        await self.http.start()
+        from .httpstream import local_ip_for  # pylint: disable=import-outside-toplevel
+
+        self.http.allowed_ips = {device.address}
+        self.http.allow_any_client = bool(self.config.http_allow_any_client)
+        await self.http.start(bind_ip=local_ip_for(device.address))
         url = self.http.url_for(device.address)
         on_streaming = lambda: self._set_state(  # noqa: E731
             State.STREAMING, f"{device.name}（HTTP 拉流，延遲由接收端緩衝決定）"
@@ -520,6 +650,15 @@ class Streamer:
             await dlna_sink.run(
                 device, url, self.config.volume, on_streaming, self._set_sink_volume_slot, self._loop
             )
+
+    async def _run_once(self, device: Device) -> None:
+        try:
+            await self._run_once_inner(device)
+        finally:
+            if device.kind in HTTP_PULL_KINDS:
+                # 串流結束就關掉 HTTP 伺服器，不讓電腦音訊在區網上一直可取
+                with suppress(Exception):
+                    await self.http.stop()
 
 
 # 向後相容的別名

@@ -35,9 +35,7 @@ def set_enabled(enabled: bool) -> None:
     try:
         import winreg
 
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE
-        ) as key:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
             if enabled:
                 winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, _command())
             else:

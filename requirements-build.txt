@@ -1,0 +1,2 @@
+pyinstaller>=6.11
+ruff>=0.9

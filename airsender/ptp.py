@@ -117,8 +117,8 @@ def build_header(
 def parse_header(data: bytes) -> Optional[dict]:
     if len(data) < HEADER_LEN:
         return None
-    (b0, version, length, domain, _r, flags, correction, _r2, clock_id, port, seq, control, log_interval) = _HEADER.unpack(
-        data[:HEADER_LEN]
+    (b0, version, length, domain, _r, flags, correction, _r2, clock_id, port, seq, control, log_interval) = (
+        _HEADER.unpack(data[:HEADER_LEN])
     )
     return {
         "type": b0 & 0x0F,
@@ -154,7 +154,13 @@ def build_announce(clock_id: bytes, seq: int, priority1: int = OUR_PRIORITY1) ->
     path_trace = struct.pack(">HH8s", 0x0008, 8, clock_id)
     length = HEADER_LEN + len(body) + len(path_trace)
     header = build_header(
-        MSG_ANNOUNCE, length, clock_id, seq, flags=FLAG_UNICAST | FLAG_PTP_TIMESCALE, control=5, log_interval=0
+        MSG_ANNOUNCE,
+        length,
+        clock_id,
+        seq,
+        flags=FLAG_UNICAST | FLAG_PTP_TIMESCALE,
+        control=5,
+        log_interval=0,
     )
     return header + body + path_trace
 
@@ -168,18 +174,28 @@ def build_signaling(clock_id: bytes, seq: int, *, stop: bool = False) -> bytes:
     if stop:
         interval_req = _org_tlv(GPTP_OUI, 2, bytes([0x7E, 0x7E, 0x7E, 0x00]))
     else:
-        interval_req = _org_tlv(GPTP_OUI, 2, bytes([0xFD, 0xFD, 0xFE, 0x02]))  # linkDelay -3, timeSync -3, announce -2
+        interval_req = _org_tlv(
+            GPTP_OUI, 2, bytes([0xFD, 0xFD, 0xFE, 0x02])
+        )  # linkDelay -3, timeSync -3, announce -2
     apple1 = _org_tlv(APPLE_OUI, 1, bytes.fromhex("00030000000027100000271000000000"))
     apple5 = _org_tlv(APPLE_OUI, 5, bytes.fromhex("000f0000000027100000271000000000") + b"\x00" * 10)
     body = b"\xff" * 10 + interval_req + apple1 + apple5  # targetPortIdentity = all ones
     length = HEADER_LEN + len(body)
-    header = build_header(MSG_SIGNALING, length, clock_id, seq, flags=FLAG_UNICAST, control=5, log_interval=0x7F)
+    header = build_header(
+        MSG_SIGNALING, length, clock_id, seq, flags=FLAG_UNICAST, control=5, log_interval=0x7F
+    )
     return header + body
 
 
 def build_delay_req(clock_id: bytes, seq: int, t3_ns: int) -> bytes:
     header = build_header(
-        MSG_DELAY_REQ, HEADER_LEN + 10, clock_id, seq, flags=FLAG_UNICAST | FLAG_PTP_TIMESCALE, control=1, log_interval=0x7F
+        MSG_DELAY_REQ,
+        HEADER_LEN + 10,
+        clock_id,
+        seq,
+        flags=FLAG_UNICAST | FLAG_PTP_TIMESCALE,
+        control=1,
+        log_interval=0x7F,
     )
     return header + pack_timestamp(t3_ns)
 
@@ -202,7 +218,13 @@ def build_follow_up(clock_id: bytes, seq: int, t1_ns: int) -> bytes:
     apple4 = _org_tlv(APPLE_OUI, 4, clock_id + b"\x00\x00")  # clock source identity
     body = pack_timestamp(t1_ns) + info_tlv + apple4
     header = build_header(
-        MSG_FOLLOW_UP, HEADER_LEN + len(body), clock_id, seq, flags=FLAG_UNICAST | FLAG_PTP_TIMESCALE, control=2, log_interval=-3
+        MSG_FOLLOW_UP,
+        HEADER_LEN + len(body),
+        clock_id,
+        seq,
+        flags=FLAG_UNICAST | FLAG_PTP_TIMESCALE,
+        control=2,
+        log_interval=-3,
     )
     return header + body
 
@@ -210,7 +232,13 @@ def build_follow_up(clock_id: bytes, seq: int, t1_ns: int) -> bytes:
 def build_delay_resp(clock_id: bytes, req: dict, t4_ns: int, requesting_port_identity: bytes) -> bytes:
     body = pack_timestamp(t4_ns) + requesting_port_identity
     header = build_header(
-        MSG_DELAY_RESP, HEADER_LEN + len(body), clock_id, req["seq"], flags=FLAG_UNICAST | FLAG_PTP_TIMESCALE, control=3, log_interval=0x7F
+        MSG_DELAY_RESP,
+        HEADER_LEN + len(body),
+        clock_id,
+        req["seq"],
+        flags=FLAG_UNICAST | FLAG_PTP_TIMESCALE,
+        control=3,
+        log_interval=0x7F,
     )
     return header + body
 
@@ -235,12 +263,28 @@ class OffsetEstimator:
         while dq and now - dq[0][0] > self.window_ns:
             dq.popleft()
 
+    OUTLIER_NS = 1_000_000_000  # 與目前中位數差超過 1 秒的樣本視為異常（偽造或壞封包），不採用
+    rejected = 0
+
+    def _plausible(self, dq: collections.deque[tuple[int, int]], value: int) -> bool:
+        if len(dq) < 4:
+            return True
+        values = sorted(v for _, v in dq)
+        median = values[len(values) // 2]
+        return abs(value - median) <= self.OUTLIER_NS
+
     def add_master_to_local(self, local_ns: int, m_ns: int) -> None:
+        if not self._plausible(self._m, m_ns):
+            self.rejected += 1
+            return
         self._m.append((local_ns, m_ns))
         self.samples_m += 1
         self._trim(self._m, local_ns)
 
     def add_local_to_master(self, local_ns: int, s_ns: int) -> None:
+        if not self._plausible(self._s, s_ns):
+            self.rejected += 1
+            return
         self._s.append((local_ns, s_ns))
         self.samples_s += 1
         self._trim(self._s, local_ns)
@@ -309,7 +353,16 @@ class PtpClock:
         self.master_priority1: Optional[int] = None
         self.first_follow_up_ns: Optional[int] = None
         self.last_follow_up_ns: Optional[int] = None
-        self.stats = {"announce_rx": 0, "sync_rx": 0, "follow_up_rx": 0, "delay_resp_rx": 0, "signaling_rx": 0, "other_rx": 0, "delay_req_rx": 0}
+        self._last_reply_ns = 0
+        self.stats = {
+            "announce_rx": 0,
+            "sync_rx": 0,
+            "follow_up_rx": 0,
+            "delay_resp_rx": 0,
+            "signaling_rx": 0,
+            "other_rx": 0,
+            "delay_req_rx": 0,
+        }
         self.responding_as_master = False
 
     # ------------------------------------------------------------ 生命週期
@@ -317,7 +370,7 @@ class PtpClock:
         loop = asyncio.get_running_loop()
         for port in (PORT_EVENT, PORT_GENERAL):
             _transport, proto = await loop.create_datagram_endpoint(
-                lambda port=port: _Endpoint(self, port), local_addr=("0.0.0.0", port)
+                lambda port=port: _Endpoint(self, port), local_addr=(self.local_ip or "0.0.0.0", port)
             )
             if port == PORT_EVENT:
                 self._event = proto
@@ -424,9 +477,16 @@ class PtpClock:
         if addr[0] != self.peer_ip:
             return
         hdr = parse_header(data)
-        if hdr is None:
+        if hdr is None or hdr["version"] != 2 or hdr["domain"] != 0:
             return
         kind = hdr["type"]
+        # 只接受已知主時鐘（從 Announce 學到的 grandmaster）送來的計時訊息；來源 IP 可偽造，clockIdentity 多一道門檻
+        timing = kind in (MSG_SYNC, MSG_FOLLOW_UP, MSG_DELAY_RESP)
+        if timing and (self.master_id is None or hdr["clock_id"] != self.master_id):
+            self.stats["other_rx"] += 1
+            return
+        if kind in (MSG_FOLLOW_UP, MSG_DELAY_RESP, MSG_SYNC, MSG_DELAY_REQ) and len(data) < HEADER_LEN + 10:
+            return
         if kind == MSG_SYNC and port == PORT_EVENT:
             self.stats["sync_rx"] += 1
             self._pending_sync[hdr["seq"]] = rx_ns
@@ -462,11 +522,15 @@ class PtpClock:
                     _LOGGER.info("接收端 Announce：grandmaster %s priority1 %d", gm.hex(), priority1)
                 self.master_id = gm
                 self.master_priority1 = priority1
-            # 回應：我們的 Announce（priority1 250，讓它勝出）
-            self.send_announce()
+            # 回應：我們的 Announce（priority1 250，讓它勝出）；每 250 ms 最多回一次，避免被拿來當反射器
+            if rx_ns - self._last_reply_ns > 250_000_000:
+                self._last_reply_ns = rx_ns
+                self.send_announce()
         elif kind == MSG_SIGNALING:
             self.stats["signaling_rx"] += 1
-            self.send_signaling()
+            if rx_ns - self._last_reply_ns > 250_000_000:
+                self._last_reply_ns = rx_ns
+                self.send_signaling()
         elif kind == MSG_DELAY_REQ:
             # 對方把我們當主時鐘：仍回 Delay_Resp（以本機時鐘）避免它放棄
             self.stats["delay_req_rx"] += 1

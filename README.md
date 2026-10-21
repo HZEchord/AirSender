@@ -11,7 +11,7 @@
 | Google Cast（Chromecast、Nest 音響、Cast 電視） | 接收端拉 HTTP WAV | 2–4 秒（接收端預緩衝） | 已實作；本機只有一台待機中的 Cast 機上盒，無法完整驗證 |
 | DLNA / UPnP MediaRenderer | 接收端拉 HTTP WAV | 1–5 秒 | 已實作；本機無 DLNA 裝置可驗證 |
 | Snapcast（snapserver tcp 來源） | TCP 推 raw PCM | 由 snapserver buffer 決定（300–1000 ms） | 已以本機假伺服器驗證資料速率 |
-| 任何播放器（VLC、foobar2000、手機 App…） | 開 `http://<電腦IP>:8765/stream.wav` | 播放器緩衝決定 | 已驗證 |
+| 任何播放器（VLC、foobar2000、手機 App…） | 開記錄檔裡印出的 `http://<電腦IP>:8765/<token>/stream.wav`（需設定 `http_allow_any_client`） | 播放器緩衝決定 | 已驗證 |
 
 - 擷取：WASAPI loopback，直接抓 Windows 混音輸出（float32，裝置原生取樣率）
 - 重取樣：libsoxr（固定比率 VHQ，或可變速率模式做時鐘漂移補償），TPDF dither 轉 16-bit
@@ -101,6 +101,7 @@ python -m venv .venv
 - **接收端**：列出網路上的 AirPlay 裝置，點選即開始串流；「重新掃描」更新清單
 - **開始 / 停止串流**：左鍵雙擊圖示也可切換
 - **接收端音量**：直接控制 HomePod 音量（或選「不控制」）
+- **無聲待命**：連續無聲 N 分鐘（預設 10）就斷線待命，有聲音自動連回；接收端被手機接管時靜默等待、釋放後才連回；睡眠喚醒後立即重連
 - **串流時靜音電腦輸出**（控制面板最下方的選項）：電腦這邊不出聲、HomePod 照常；USB DAC / HDMI / 藍牙等硬體靜音的裝置適用，內建類比輸出可能連擷取一起靜音
 - **延遲**：模式（遊戲 / 影片 = 盡量壓低延遲，預設 buffered「較低」約 130 ms；音樂 = 大緩衝求穩，預設 buffered「標準」約 250 ms），
   每個模式記住自己的傳輸方式（realtime / buffered）與預設組（最低 / 較低 / 低 / 標準 / 高 / 最穩）；realtime 可再個別調整 HomePod 最小緩衝、接收端緩衝、本機抖動緩衝
@@ -208,9 +209,11 @@ AirSender 在這些限制內做到「不經有損壓縮」；realtime 的「AirP
   ```
 
   命令列可直接 `AirSenderCLI.exe --headless --snapcast 192.168.1.10`。
-- **任何播放器**：串流開始後（或選了任一 Cast / DLNA 裝置），在同網路的播放器開 `http://<電腦IP>:8765/stream.wav`（WAV）或 `/stream.pcm`（raw s16le 44.1 kHz 立體聲）即可。
+- **任何播放器**：0.14.0 起 HTTP 串流只在選了 Cast / DLNA 裝置時啟動、串流結束就關閉，URL 含每次啟動隨機的 token，
+  而且只接受目前選擇的接收端 IP。想讓區網裡任何播放器拉流，把設定檔的 `http_allow_any_client` 設為 true，
+  並從記錄檔取得含 token 的 URL（`/<token>/stream.wav` 或 `/<token>/stream.pcm`）。
 - 防火牆：Cast / DLNA 的探索依賴 mDNS / SSDP **多播回應**（入站 UDP），播放時接收端還要連入 TCP 8765；
-  兩者都需要安裝程式加入的防火牆規則（放行整個程式）。沒有規則時，打包版會掃不到 Cast / DLNA 裝置，
+  兩者都需要安裝程式加入的防火牆規則（放行整個程式，但只限本機子網 `remoteip=localsubnet`）。沒有規則時，打包版會掃不到 Cast / DLNA 裝置，
   但 AirPlay 不受影響（pyatv 的 mDNS 要求單播回應）。
 
 ## 房間校正與低音增強
@@ -227,6 +230,16 @@ HomePod 的運算音訊（房間感測、低音管理）只對 Apple 自家來�
 
 限制：USB 麥克風通常在 50 Hz 以下不準，所以 40 Hz 以下不修正；HomePod mini 本身的低頻下限約 60 Hz，
 給它過多 40–60 Hz 增益只會吃掉動態餘裕。
+
+## 安全性設計（0.14.0 起）
+
+- HAP 配對憑證與密碼以 Windows DPAPI（使用者範圍）加密後才寫進 `config.json`；換電腦或換帳號時重新配對即可。
+- 自動更新只接受 GitHub 網域的 HTTPS 位址，Release 沒附 SHA-256 就拒絕安裝，啟動安裝程式前再驗一次雜湊；下載上限 200 MB。
+- HTTP 串流伺服器：只在需要時啟動、路徑含隨機 token、只接受目前接收端的 IP、最多 8 個客戶端。
+- PTP：只接受已宣告主時鐘（clockIdentity 相符）的計時訊息，偏離中位數 1 秒以上的樣本丟棄，回應限速。
+- 防火牆規則限本機子網；`log_level` 為 `DEBUG` 時 pyatv 仍維持 INFO（協定內容含金鑰），要看協定細節請用 `TRACE`。
+- 區網來的裝置名稱只留可列印字元；CI 的 Actions 釘在 commit、相依套件以雜湊鎖定、發布權限只給 tag 觸發的工作。
+- 尚未做到：安裝程式沒有程式碼簽章（需要憑證），所以更新仍依賴 GitHub 帳號與 CI 的安全。
 
 ## 更新與維護
 
@@ -286,13 +299,29 @@ Windows 混音 ──WASAPI loopback──▶ capture.py（soxr 重取樣 + dith
 
 ## 開發
 
+提交前跑一次與 CI 相同的檢查（lint、格式、單元測試）：
+
+```bash
+.\check.ps1
+```
+
+個別指令：
+
 ```bash
 .venv\Scripts\python -m ruff check airsender tools tests
 ```
 
 ```bash
+.venv\Scripts\python -m ruff format airsender tools tests
+```
+
+```bash
 .venv\Scripts\python -m unittest discover -s tests -v
 ```
+
+測試不需要接收端：buffered 推送迴圈、串流監看（待命 / 喚醒 / 被占用）、PTP 訊息、ALAC 框架、設定遷移都用假物件測。
+需要實機的驗證（延遲、音高、兩種傳輸）用 `tools/` 下的工具，見「量測延遲」。設定檔的預設值變更一律寫在 `config.py` 的
+`MIGRATIONS`，不要散在載入程式裡。
 
 效能參考（本機 i7 等級、176.4 kHz DAC、串流到 HomePod）：擷取 + 兩段式重取樣 + dither 約 3.2% 單核心，
 pyatv 傳送路徑約 4–5% 單核心，合計約 7% 單核心（16 執行緒機器約 0.5% 整體）。

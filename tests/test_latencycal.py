@@ -47,7 +47,9 @@ class LatencyCalTests(unittest.TestCase):
         self.assertTrue(r.consistent)
         self.assertIn("147 ms", r.summary())
         self.assertIn("排除 1", r.summary())
-        self.assertFalse(latencycal.LatencyResult(median_ms=float("nan"), values_ms=[], rejected=0, repeats=5).consistent)
+        self.assertFalse(
+            latencycal.LatencyResult(median_ms=float("nan"), values_ms=[], rejected=0, repeats=5).consistent
+        )
 
 
 if __name__ == "__main__":

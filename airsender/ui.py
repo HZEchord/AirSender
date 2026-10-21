@@ -190,8 +190,14 @@ class Tooltip:
         frame = tk.Frame(win, background="#333333")
         frame.pack()
         tk.Label(
-            frame, text=self.text, justify="left", background="#ffffe6", foreground="#222222",
-            font=(UI_FONT, 9), padx=8, pady=6,
+            frame,
+            text=self.text,
+            justify="left",
+            background="#ffffe6",
+            foreground="#222222",
+            font=(UI_FONT, 9),
+            padx=8,
+            pady=6,
         ).pack(padx=1, pady=1)
         win.update_idletasks()
         sw = win.winfo_screenwidth()
@@ -273,6 +279,11 @@ HELP = {
         "驗證 SHA-256 後靜默安裝並重新啟動。\n"
         "倉庫為私有或離線時會顯示「無法取得」。\n"
         "天數設 0 代表不自動檢查。"
+    ),
+    "standby": (
+        "連續無聲（低於 −80 dBFS）超過這個分鐘數就斷線待命，讓接收端休眠、不占 Wi-Fi；\n"
+        "電腦一有聲音就自動連回（約 2–3 秒恢復，這段聲音會漏掉）。0 = 一直連著，無聲時持續送靜音。\n"
+        "另外，接收端被手機等其他來源接管時會靜默待命，釋放後才連回，不會搶回來。"
     ),
     "mute": (
         "串流中把電腦這邊的輸出端點靜音，停止串流或結束程式時還原。\n"
@@ -360,7 +371,9 @@ class _PanelBase:
         if list(combo["values"]) != names:
             combo["values"] = names
         current = self.app._current_device()  # pylint: disable=protected-access
-        want = keys.index(current.identifier) if current and current.identifier in keys else (0 if names else -1)
+        want = (
+            keys.index(current.identifier) if current and current.identifier in keys else (0 if names else -1)
+        )
         if want >= 0 and combo.current() != want:
             combo.current(want)
         # 下拉顯示的裝置就是目前選擇
@@ -387,7 +400,16 @@ class _PanelBase:
         title = st.state.value
         if device:
             title += f" → {device.name}（{KIND_LABELS.get(device.kind, device.kind)}）"
-        out = {"title": title, "source": "", "buf": "", "ppm": "", "underrun": "", "overflow": "", "retx": "", "message": ""}
+        out = {
+            "title": title,
+            "source": "",
+            "buf": "",
+            "ppm": "",
+            "underrun": "",
+            "overflow": "",
+            "retx": "",
+            "message": "",
+        }
         if st.message and st.state != State.STREAMING:
             out["message"] = st.message[:60]
         cap = st.capture_status
@@ -432,7 +454,9 @@ class _PanelBase:
         frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
         for key, width in (("buf", 11), ("ppm", 14), ("underrun", 15), ("retx", 11), ("overflow", 11)):
             v[f"stat_{key}"] = tk.StringVar()
-            ttk.Label(frame, textvariable=v[f"stat_{key}"], style="Mono.TLabel", width=width, anchor="w").pack(side="left")
+            ttk.Label(
+                frame, textvariable=v[f"stat_{key}"], style="Mono.TLabel", width=width, anchor="w"
+            ).pack(side="left")
         if help_text:
             help_icon(frame, HELP["stats"], self.ui).pack(side="left", padx=(4, 0))
         self._stats_frame = frame
@@ -493,19 +517,32 @@ class _PanelBase:
         if "mode_detail" in v:
             name = mode_preset_name(cfg, cfg.mode)
             current = latency_preset_name(cfg)
-            v["mode_detail"].set(name.split("（")[0] + ("" if current == name else "（自訂）") + "・" + name.split("（")[1].rstrip("）") if "（" in name else name)
+            v["mode_detail"].set(
+                name.split("（")[0]
+                + ("" if current == name else "（自訂）")
+                + "・"
+                + name.split("（")[1].rstrip("）")
+                if "（" in name
+                else name
+            )
         if "drift" in v:
             v["drift"].set(cfg.drift_compensation)
         if "quality" in v:
-            v["quality"].set(next((k for k, q in RESAMPLE_QUALITIES.items() if q == cfg.resample_quality), "最高 (VHQ)"))
+            v["quality"].set(
+                next((k for k, q in RESAMPLE_QUALITIES.items() if q == cfg.resample_quality), "最高 (VHQ)")
+            )
         if "dither" in v:
             v["dither"].set(cfg.dither)
         if "rate" in v:
-            v["rate"].set(next((k for k, val in RATE_CHOICES.items() if val == cfg.airplay_sample_rate), "自動"))
+            v["rate"].set(
+                next((k for k, val in RATE_CHOICES.items() if val == cfg.airplay_sample_rate), "自動")
+            )
         if "auto_stream" in v:
             v["auto_stream"].set(cfg.autostart_stream)
         if "mute_local" in v:
             v["mute_local"].set(cfg.mute_local_output)
+        if "standby_min" in v and v["standby_min"].get() != cfg.idle_standby_minutes:
+            v["standby_min"].set(int(cfg.idle_standby_minutes))
         if "auto_win" in v:
             v["auto_win"].set(autostart.is_enabled())
         if "toggle_text" in v:
@@ -580,11 +617,25 @@ class _PanelBase:
         self._dragging = False
         cfg = self.app.config
         lat = latency if latency is not None else self._snap(self._vars["latency"].get(), self.LATENCY_STEP)
-        jit = jitter if jitter is not None else (
-            self._snap(self._vars["jitter"].get(), self.JITTER_STEP) if "jitter" in self._vars else cfg.jitter_buffer_ms
+        jit = (
+            jitter
+            if jitter is not None
+            else (
+                self._snap(self._vars["jitter"].get(), self.JITTER_STEP)
+                if "jitter" in self._vars
+                else cfg.jitter_buffer_ms
+            )
         )
-        lmin = self._snap(self._vars["lmin"].get(), self.LMIN_STEP) if "lmin" in self._vars else cfg.airplay_latency_min_ms
-        if lat != cfg.receiver_latency_ms or jit != cfg.jitter_buffer_ms or lmin != cfg.airplay_latency_min_ms:
+        lmin = (
+            self._snap(self._vars["lmin"].get(), self.LMIN_STEP)
+            if "lmin" in self._vars
+            else cfg.airplay_latency_min_ms
+        )
+        if (
+            lat != cfg.receiver_latency_ms
+            or jit != cfg.jitter_buffer_ms
+            or lmin != cfg.airplay_latency_min_ms
+        ):
             cfg.receiver_latency_ms = lat
             cfg.jitter_buffer_ms = jit
             cfg.airplay_latency_min_ms = lmin
@@ -666,14 +717,20 @@ class QuickPanel(_PanelBase):
         v["toggle_text"] = tk.StringVar(value="開始串流")
         btns = ttk.Frame(outer)
         btns.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        ttk.Button(btns, textvariable=v["toggle_text"], style="Big.TButton", command=self._toggle).pack(side="left")
-        ttk.Button(btns, text="重新連線", command=lambda: _run_bg(self.app._reconnect)).pack(side="left", padx=(6, 0))  # pylint: disable=protected-access
+        ttk.Button(btns, textvariable=v["toggle_text"], style="Big.TButton", command=self._toggle).pack(
+            side="left"
+        )
+        ttk.Button(btns, text="重新連線", command=lambda: _run_bg(self.app._reconnect)).pack(
+            side="left", padx=(6, 0)
+        )  # pylint: disable=protected-access
         ttk.Button(btns, text="控制面板…", command=self._open_full).pack(side="right")
 
         ttk.Label(outer, text="接收端").grid(row=4, column=0, sticky="w", pady=(10, 0))
         self._device_combo = ttk.Combobox(outer, state="readonly", width=40)
         self._device_combo.grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
-        self._device_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_device_selected(self._device_combo))
+        self._device_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: self._on_device_selected(self._device_combo)
+        )
 
         ttk.Label(outer, text="音量").grid(row=5, column=0, sticky="w", pady=(8, 0))
         volf = ttk.Frame(outer)
@@ -686,8 +743,12 @@ class QuickPanel(_PanelBase):
         scale.grid(row=0, column=0, sticky="ew")
         self._bind_drag(scale)
         scale.bind("<ButtonRelease-1>", lambda _e: self._on_volume_release())
-        ttk.Label(volf, textvariable=v["volume_label"], width=5, anchor="e").grid(row=0, column=1, padx=(6, 0))
-        ttk.Checkbutton(volf, text="不控制", variable=v["volume_off"], command=self._on_volume_off).grid(row=0, column=2, padx=(8, 0))
+        ttk.Label(volf, textvariable=v["volume_label"], width=5, anchor="e").grid(
+            row=0, column=1, padx=(6, 0)
+        )
+        ttk.Checkbutton(volf, text="不控制", variable=v["volume_off"], command=self._on_volume_off).grid(
+            row=0, column=2, padx=(8, 0)
+        )
 
         ttk.Label(outer, text="模式").grid(row=6, column=0, sticky="w", pady=(8, 0))
         seg = ttk.Frame(outer)
@@ -703,7 +764,9 @@ class QuickPanel(_PanelBase):
                 command=lambda k=key: self.app._set_mode(k),  # pylint: disable=protected-access
             ).pack(side="left", padx=(0, 4))
         v["mode_detail"] = tk.StringVar()
-        ttk.Label(seg, textvariable=v["mode_detail"], style="Muted.TLabel", width=16, anchor="w").pack(side="left", padx=(8, 0))
+        ttk.Label(seg, textvariable=v["mode_detail"], style="Muted.TLabel", width=16, anchor="w").pack(
+            side="left", padx=(8, 0)
+        )
 
         v["update_text"] = tk.StringVar()
         upd = ttk.Frame(outer)
@@ -729,8 +792,14 @@ class QuickPanel(_PanelBase):
             combo = self._device_combo
             popdown = combo.tk.call("ttk::combobox::PopdownWindow", str(combo))
             if int(combo.tk.call("winfo", "ismapped", popdown)):
-                px, py = int(combo.tk.call("winfo", "rootx", popdown)), int(combo.tk.call("winfo", "rooty", popdown))
-                pw, ph = int(combo.tk.call("winfo", "width", popdown)), int(combo.tk.call("winfo", "height", popdown))
+                px, py = (
+                    int(combo.tk.call("winfo", "rootx", popdown)),
+                    int(combo.tk.call("winfo", "rooty", popdown)),
+                )
+                pw, ph = (
+                    int(combo.tk.call("winfo", "width", popdown)),
+                    int(combo.tk.call("winfo", "height", popdown)),
+                )
                 return px <= x < px + pw and py <= y < py + ph
         except Exception:  # pylint: disable=broad-except
             return True
@@ -853,7 +922,9 @@ class ControlPanel(_PanelBase):
         rec.columnconfigure(0, weight=1)
         self._device_combo = ttk.Combobox(rec, state="readonly", width=44)
         self._device_combo.grid(row=0, column=0, columnspan=3, sticky="ew")
-        self._device_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_device_selected(self._device_combo))
+        self._device_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: self._on_device_selected(self._device_combo)
+        )
         ttk.Button(rec, text="重新掃描", command=self._rescan).grid(row=0, column=3, padx=(8, 0))
         ttk.Button(rec, text="重新連線", command=lambda: _run_bg(self.app._reconnect)).grid(  # pylint: disable=protected-access
             row=1, column=0, sticky="w", pady=(6, 0)
@@ -877,7 +948,9 @@ class ControlPanel(_PanelBase):
         scale.grid(row=0, column=0, sticky="ew")
         self._bind_drag(scale)
         scale.bind("<ButtonRelease-1>", lambda _e: self._on_volume_release())
-        ttk.Label(volf, textvariable=v["volume_label"], width=6, anchor="e").grid(row=0, column=1, padx=(8, 0))
+        ttk.Label(volf, textvariable=v["volume_label"], width=6, anchor="e").grid(
+            row=0, column=1, padx=(8, 0)
+        )
         ttk.Checkbutton(volf, text="不控制", variable=v["volume_off"], command=self._on_volume_off).grid(
             row=1, column=0, sticky="w", pady=(4, 0)
         )
@@ -892,7 +965,11 @@ class ControlPanel(_PanelBase):
         mode_row.grid(row=0, column=1, columnspan=2, sticky="ew", padx=8)
         for key, label in MODES.items():
             ttk.Radiobutton(
-                mode_row, text=label, value=key, variable=v["mode"], style="Seg.Toolbutton",
+                mode_row,
+                text=label,
+                value=key,
+                variable=v["mode"],
+                style="Seg.Toolbutton",
                 command=lambda k=key: self.app._set_mode(k),  # pylint: disable=protected-access
             ).pack(side="left", padx=(0, 4))
         help_icon(mode_row, HELP["mode"], self.ui).pack(side="right")
@@ -900,7 +977,11 @@ class ControlPanel(_PanelBase):
         ttk.Label(mode_row, text="傳輸", style="Muted.TLabel").pack(side="left", padx=(16, 4))
         for key, label in TRANSPORTS.items():
             ttk.Radiobutton(
-                mode_row, text=label, value=key, variable=v["transport"], style="Seg.Toolbutton",
+                mode_row,
+                text=label,
+                value=key,
+                variable=v["transport"],
+                style="Seg.Toolbutton",
                 command=lambda k=key: self.app._set_transport(k),  # pylint: disable=protected-access
             ).pack(side="left", padx=(0, 4))
         help_icon(mode_row, HELP["transport"], self.ui).pack(side="left")
@@ -909,39 +990,71 @@ class ControlPanel(_PanelBase):
         ttk.Label(latf, textvariable=v["preset_label"]).grid(row=1, column=0, sticky="w", pady=(4, 0))
         pc_row = ttk.Frame(latf)
         pc_row.grid(row=1, column=1, columnspan=2, sticky="ew", padx=8, pady=(4, 0))
-        pc = ttk.Combobox(pc_row, textvariable=v["preset"], state="readonly", values=list(presets_for(mode_transport(cfg, cfg.mode))) + ["自訂"], width=18)
+        pc = ttk.Combobox(
+            pc_row,
+            textvariable=v["preset"],
+            state="readonly",
+            values=list(presets_for(mode_transport(cfg, cfg.mode))) + ["自訂"],
+            width=18,
+        )
         self._preset_combo = pc
         pc.pack(side="left")
         pc.bind("<<ComboboxSelected>>", self._on_preset_selected)
         v["latency_est"] = tk.StringVar()
-        ttk.Label(pc_row, textvariable=v["latency_est"], style="Muted.TLabel", width=12, anchor="w").pack(side="left", padx=(8, 0))
+        ttk.Label(pc_row, textvariable=v["latency_est"], style="Muted.TLabel", width=12, anchor="w").pack(
+            side="left", padx=(8, 0)
+        )
         v["latency_measured"] = tk.StringVar()
         self._latcal_btn = ttk.Button(pc_row, text="校正延遲…", command=self._start_latency_calibration)
         self._latcal_btn.pack(side="left", padx=(8, 0))
         help_icon(pc_row, HELP["latency_cal"], self.ui).pack(side="left", padx=(2, 0))
-        ttk.Label(pc_row, textvariable=v["latency_measured"], style="Muted.TLabel", anchor="w").pack(side="left", padx=(8, 0))
+        ttk.Label(pc_row, textvariable=v["latency_measured"], style="Muted.TLabel", anchor="w").pack(
+            side="left", padx=(8, 0)
+        )
         help_icon(pc_row, HELP["latency"], self.ui).pack(side="right")
         v["latency"] = tk.DoubleVar(value=float(cfg.receiver_latency_ms))
         v["latency_label"] = tk.StringVar()
         ttk.Label(latf, text="接收端緩衝").grid(row=2, column=0, sticky="w", pady=(4, 0))
-        s = ttk.Scale(latf, from_=self.LATENCY_MIN, to=self.LATENCY_MAX, variable=v["latency"], command=lambda _v: self._update_labels())
+        s = ttk.Scale(
+            latf,
+            from_=self.LATENCY_MIN,
+            to=self.LATENCY_MAX,
+            variable=v["latency"],
+            command=lambda _v: self._update_labels(),
+        )
         s.grid(row=2, column=1, sticky="ew", padx=8, pady=(4, 0))
         self._bind_drag(s)
         s.bind("<ButtonRelease-1>", lambda _e: self._apply_latency())
-        ttk.Label(latf, textvariable=v["latency_label"], width=8, anchor="e").grid(row=2, column=2, pady=(4, 0))
+        ttk.Label(latf, textvariable=v["latency_label"], width=8, anchor="e").grid(
+            row=2, column=2, pady=(4, 0)
+        )
         v["jitter"] = tk.DoubleVar(value=float(cfg.jitter_buffer_ms))
         v["jitter_label"] = tk.StringVar()
         ttk.Label(latf, text="本機抖動緩衝").grid(row=3, column=0, sticky="w", pady=(4, 0))
-        s2 = ttk.Scale(latf, from_=self.JITTER_MIN, to=self.JITTER_MAX, variable=v["jitter"], command=lambda _v: self._update_labels())
+        s2 = ttk.Scale(
+            latf,
+            from_=self.JITTER_MIN,
+            to=self.JITTER_MAX,
+            variable=v["jitter"],
+            command=lambda _v: self._update_labels(),
+        )
         s2.grid(row=3, column=1, sticky="ew", padx=8, pady=(4, 0))
         self._slider_jitter = s2
         self._bind_drag(s2)
         s2.bind("<ButtonRelease-1>", lambda _e: self._apply_latency())
-        ttk.Label(latf, textvariable=v["jitter_label"], width=8, anchor="e").grid(row=3, column=2, pady=(4, 0))
+        ttk.Label(latf, textvariable=v["jitter_label"], width=8, anchor="e").grid(
+            row=3, column=2, pady=(4, 0)
+        )
         v["lmin"] = tk.DoubleVar(value=float(cfg.airplay_latency_min_ms))
         v["lmin_label"] = tk.StringVar()
         ttk.Label(latf, text="HomePod 最小緩衝").grid(row=4, column=0, sticky="w", pady=(4, 0))
-        s3 = ttk.Scale(latf, from_=self.LMIN_MIN, to=self.LMIN_MAX, variable=v["lmin"], command=lambda _v: self._update_labels())
+        s3 = ttk.Scale(
+            latf,
+            from_=self.LMIN_MIN,
+            to=self.LMIN_MAX,
+            variable=v["lmin"],
+            command=lambda _v: self._update_labels(),
+        )
         s3.grid(row=4, column=1, sticky="ew", padx=8, pady=(4, 0))
         self._slider_lmin = s3
         self._bind_drag(s3)
@@ -957,18 +1070,30 @@ class ControlPanel(_PanelBase):
         dr = ttk.Frame(qf)
         dr.grid(row=0, column=1, columnspan=2, sticky="ew", padx=8)
         for label, mode in DRIFT_MODES.items():
-            ttk.Radiobutton(dr, text=label.split("（")[0].replace("：可變速率微調", ""), value=mode, variable=v["drift"], command=self._on_drift).pack(side="left", padx=(0, 10))
+            ttk.Radiobutton(
+                dr,
+                text=label.split("（")[0].replace("：可變速率微調", ""),
+                value=mode,
+                variable=v["drift"],
+                command=self._on_drift,
+            ).pack(side="left", padx=(0, 10))
         help_icon(dr, HELP["drift"], self.ui).pack(side="right")
         ttk.Label(qf, text="重取樣品質").grid(row=1, column=0, sticky="w", pady=(4, 0))
         v["quality"] = tk.StringVar()
-        qc = ttk.Combobox(qf, textvariable=v["quality"], state="readonly", values=list(RESAMPLE_QUALITIES), width=14)
+        qc = ttk.Combobox(
+            qf, textvariable=v["quality"], state="readonly", values=list(RESAMPLE_QUALITIES), width=14
+        )
         qc.grid(row=1, column=1, sticky="w", padx=8, pady=(4, 0))
-        qc.bind("<<ComboboxSelected>>", lambda _e: self.app._set_quality(RESAMPLE_QUALITIES[v["quality"].get()]))  # pylint: disable=protected-access
+        qc.bind(
+            "<<ComboboxSelected>>", lambda _e: self.app._set_quality(RESAMPLE_QUALITIES[v["quality"].get()])
+        )  # pylint: disable=protected-access
         v["dither"] = tk.BooleanVar(value=cfg.dither)
         dith = ttk.Frame(qf)
         dith.grid(row=1, column=2, sticky="e", pady=(4, 0))
         help_icon(dith, HELP["quality"] + "\n\n" + HELP["dither"], self.ui).pack(side="right")
-        ttk.Checkbutton(dith, text="TPDF dither", variable=v["dither"], command=self._on_dither).pack(side="right", padx=(0, 6))
+        ttk.Checkbutton(dith, text="TPDF dither", variable=v["dither"], command=self._on_dither).pack(
+            side="right", padx=(0, 6)
+        )
         ttk.Label(qf, text="擷取來源").grid(row=2, column=0, sticky="w", pady=(4, 0))
         self._capture_combo = ttk.Combobox(qf, state="readonly", width=40)
         self._capture_combo.grid(row=2, column=1, columnspan=2, sticky="ew", padx=8, pady=(4, 0))
@@ -977,7 +1102,9 @@ class ControlPanel(_PanelBase):
         v["rate"] = tk.StringVar()
         rate_row = ttk.Frame(qf)
         rate_row.grid(row=3, column=1, columnspan=2, sticky="ew", padx=8, pady=(4, 0))
-        rc = ttk.Combobox(rate_row, textvariable=v["rate"], state="readonly", values=list(RATE_CHOICES), width=14)
+        rc = ttk.Combobox(
+            rate_row, textvariable=v["rate"], state="readonly", values=list(RATE_CHOICES), width=14
+        )
         rc.pack(side="left")
         rc.bind("<<ComboboxSelected>>", lambda _e: self.app._set_airplay_rate(RATE_CHOICES[v["rate"].get()]))  # pylint: disable=protected-access
         help_icon(rate_row, HELP["rate"], self.ui).pack(side="right")
@@ -987,8 +1114,12 @@ class ControlPanel(_PanelBase):
         rf.grid(row=6, column=0, sticky="ew", pady=(10, 0))
         rf.columnconfigure(1, weight=1)
         v["room_enabled"] = tk.BooleanVar(value=cfg.room_correction_enabled)
-        self._room_check = ttk.Checkbutton(rf, text="啟用校正", variable=v["room_enabled"],
-                                           command=lambda: self.app._toggle_room_correction(v["room_enabled"].get()))  # pylint: disable=protected-access
+        self._room_check = ttk.Checkbutton(
+            rf,
+            text="啟用校正",
+            variable=v["room_enabled"],
+            command=lambda: self.app._toggle_room_correction(v["room_enabled"].get()),
+        )  # pylint: disable=protected-access
         self._room_check.grid(row=0, column=0, sticky="w")
         v["room_status"] = tk.StringVar()
         ttk.Label(rf, textvariable=v["room_status"], style="Muted.TLabel", width=40, anchor="w").grid(
@@ -1017,8 +1148,16 @@ class ControlPanel(_PanelBase):
         ss.grid(row=2, column=1, sticky="ew", padx=8, pady=(4, 0))
         self._bind_drag(ss)
         ss.bind("<ButtonRelease-1>", lambda _e: self._apply_strength())
-        ttk.Label(rf, textvariable=v["strength_label"], width=8, anchor="e").grid(row=2, column=2, pady=(4, 0))
-        self._curve = tk.Canvas(rf, height=self.ui.px(100), background="#ffffff", highlightthickness=1, highlightbackground="#cccccc")
+        ttk.Label(rf, textvariable=v["strength_label"], width=8, anchor="e").grid(
+            row=2, column=2, pady=(4, 0)
+        )
+        self._curve = tk.Canvas(
+            rf,
+            height=self.ui.px(100),
+            background="#ffffff",
+            highlightthickness=1,
+            highlightbackground="#cccccc",
+        )
         self._curve.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
         self._curve.bind("<Configure>", lambda _e: self._draw_curves())
         v["cal_progress"] = tk.StringVar()
@@ -1041,7 +1180,9 @@ class ControlPanel(_PanelBase):
         daysf = ttk.Frame(upf)
         daysf.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         ttk.Label(daysf, text="每").pack(side="left")
-        sp = ttk.Spinbox(daysf, from_=0, to=90, width=4, textvariable=v["update_days"], command=self._on_update_days)
+        sp = ttk.Spinbox(
+            daysf, from_=0, to=90, width=4, textvariable=v["update_days"], command=self._on_update_days
+        )
         sp.pack(side="left", padx=4)
         sp.bind("<FocusOut>", lambda _e: self._on_update_days())
         ttk.Label(daysf, text="天自動檢查").pack(side="left")
@@ -1052,17 +1193,29 @@ class ControlPanel(_PanelBase):
         opt.grid(row=8, column=0, sticky="ew", pady=(10, 0))
         v["auto_stream"] = tk.BooleanVar(value=cfg.autostart_stream)
         v["auto_win"] = tk.BooleanVar(value=autostart.is_enabled())
-        ttk.Checkbutton(opt, text="啟動後自動連線", variable=v["auto_stream"], command=self._on_auto_stream).grid(
-            row=0, column=0, sticky="w"
-        )
+        ttk.Checkbutton(
+            opt, text="啟動後自動連線", variable=v["auto_stream"], command=self._on_auto_stream
+        ).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(opt, text="登入時自動啟動", variable=v["auto_win"], command=self._on_auto_win).grid(
             row=0, column=1, sticky="w", padx=(12, 0)
         )
         v["mute_local"] = tk.BooleanVar(value=cfg.mute_local_output)
-        ttk.Checkbutton(opt, text="串流時靜音電腦輸出", variable=v["mute_local"], command=self._on_mute_local).grid(
-            row=0, column=2, sticky="w", padx=(12, 0)
-        )
+        ttk.Checkbutton(
+            opt, text="串流時靜音電腦輸出", variable=v["mute_local"], command=self._on_mute_local
+        ).grid(row=0, column=2, sticky="w", padx=(12, 0))
         help_icon(opt, HELP["mute"], self.ui).grid(row=0, column=3, sticky="w", padx=(2, 0))
+        standby = ttk.Frame(opt)
+        standby.grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ttk.Label(standby, text="無聲").pack(side="left")
+        v["standby_min"] = tk.IntVar(value=int(cfg.idle_standby_minutes))
+        sb = ttk.Spinbox(
+            standby, from_=0, to=240, width=4, textvariable=v["standby_min"], command=self._on_standby
+        )
+        sb.pack(side="left", padx=(4, 4))
+        sb.bind("<FocusOut>", lambda _e: self._on_standby())
+        sb.bind("<Return>", lambda _e: self._on_standby())
+        ttk.Label(standby, text="分鐘後斷線待命（0 = 不待命）").pack(side="left")
+        help_icon(standby, HELP["standby"], self.ui).pack(side="left", padx=(2, 0))
         btns = ttk.Frame(outer)
         btns.grid(row=9, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(btns, text="防火牆規則", command=self.app._add_firewall_rules).pack(side="left")  # pylint: disable=protected-access
@@ -1088,7 +1241,11 @@ class ControlPanel(_PanelBase):
             keys.append(index)
         self._capture_keys = keys
         self._capture_combo["values"] = names
-        idx = keys.index(self.app.config.capture_device_index) if self.app.config.capture_device_index in keys else 0
+        idx = (
+            keys.index(self.app.config.capture_device_index)
+            if self.app.config.capture_device_index in keys
+            else 0
+        )
         self._capture_combo.current(idx)
 
     def _refresh_status(self) -> None:
@@ -1120,7 +1277,9 @@ class ControlPanel(_PanelBase):
                 text += f" · 預衰 {ENGINE.pre_gain_db:.0f} dB"
             self._vars["room_status"].set(text)
         self._cal_btn.state(["disabled"] if getattr(self, "_cal_running", False) else ["!disabled"])
-        self._latcal_btn.state(["disabled"] if getattr(self, "_latcal_running", False) or not is_airplay else ["!disabled"])
+        self._latcal_btn.state(
+            ["disabled"] if getattr(self, "_latcal_running", False) or not is_airplay else ["!disabled"]
+        )
         self._draw_curves()
         from .updater import describe_last_check  # pylint: disable=import-outside-toplevel
 
@@ -1193,7 +1352,9 @@ class ControlPanel(_PanelBase):
             self._latcal_running = True
 
             def progress(msg: str, frac: float) -> None:
-                self.ui.call(lambda: self._vars["latency_measured"].set(f"量測中… {msg}（{frac * 100:.0f}%）"))
+                self.ui.call(
+                    lambda: self._vars["latency_measured"].set(f"量測中… {msg}（{frac * 100:.0f}%）")
+                )
 
             try:
                 summary = self.app._run_latency_calibration(progress)  # pylint: disable=protected-access
@@ -1258,17 +1419,33 @@ class ControlPanel(_PanelBase):
         for f in (50, 100, 200, 500, 1000, 2000, 5000, 10000):
             x, _ = xy(f, 0)
             c.create_line(x, 0, x, h, fill="#eeeeee")
-            c.create_text(x + 2, h - 2, text=f"{f if f < 1000 else str(f // 1000) + 'k'}", anchor="sw", fill="#999999", font=(UI_FONT, 7))
+            c.create_text(
+                x + 2,
+                h - 2,
+                text=f"{f if f < 1000 else str(f // 1000) + 'k'}",
+                anchor="sw",
+                fill="#999999",
+                font=(UI_FONT, 7),
+            )
         for db in (-10, -5, 0, 5, 10):
             _, y = xy(f_lo, db)
             c.create_line(0, y, w, y, fill="#f0f0f0" if db else "#bbbbbb")
         mask = (freqs >= f_lo) & (freqs <= f_hi)
-        for key, color, width in (("measured", "#aaaaaa", 1), ("correction", "#e08a00", 1), ("result", "#1f6fd0", 2)):
+        for key, color, width in (
+            ("measured", "#aaaaaa", 1),
+            ("correction", "#e08a00", 1),
+            ("result", "#1f6fd0", 2),
+        ):
             if key not in curves:
                 continue
-            pts = [xy(f, float(np.clip(d, -db_range, db_range))) for f, d in zip(freqs[mask], curves[key][mask], strict=True)]
+            pts = [
+                xy(f, float(np.clip(d, -db_range, db_range)))
+                for f, d in zip(freqs[mask], curves[key][mask], strict=True)
+            ]
             c.create_line(*[v for pt in pts for v in pt], fill=color, width=width, smooth=True)
-        legend = "灰：量測　橘：修正　藍：預估結果" if "measured" in curves else "橘：低音增強曲線（尚未校正）"
+        legend = (
+            "灰：量測　橘：修正　藍：預估結果" if "measured" in curves else "橘：低音增強曲線（尚未校正）"
+        )
         c.create_text(4, 4, text=legend, anchor="nw", fill="#666666", font=(UI_FONT, 8))
 
     def _on_preset_selected(self, _event=None) -> None:
@@ -1288,6 +1465,17 @@ class ControlPanel(_PanelBase):
         idx = self._capture_combo.current()
         if 0 <= idx < len(self._capture_keys):
             self.app._set_capture_device(self._capture_keys[idx])  # pylint: disable=protected-access
+
+    def _on_standby(self) -> None:
+        import tkinter as tk  # pylint: disable=import-outside-toplevel
+
+        try:
+            minutes = max(0, min(240, int(self._vars["standby_min"].get())))
+        except (ValueError, tk.TclError):
+            return
+        if minutes != self.app.config.idle_standby_minutes:
+            self.app.config.idle_standby_minutes = minutes
+            self.app.config.save()
 
     def _on_mute_local(self) -> None:
         self.app._set_mute_local(self._vars["mute_local"].get())  # pylint: disable=protected-access

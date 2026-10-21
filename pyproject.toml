@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "airsender"
-version = "0.13.0"
+version = "0.14.0"
 description = "把 Windows 系統音訊以未壓縮 PCM 送到 HomePod / AirPlay、Google Cast、DLNA、Snapcast 接收端"
 license = { text = "MIT" }
 keywords = ["airplay", "homepod", "wasapi", "loopback", "chromecast", "dlna", "snapcast"]
@@ -26,6 +26,7 @@ dependencies = [
     "PyChromecast>=14.0",
     "async-upnp-client>=0.40",
     "pycaw>=20240210",
+    "chacha20poly1305-reuseable>=0.13",
 ]
 
 [project.scripts]

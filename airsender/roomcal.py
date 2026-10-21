@@ -138,8 +138,13 @@ class CorrectionEngine:
             self._fs = fs
             self.pre_gain_db = pre
             self.active = True
-        _LOGGER.info("房間校正 EQ 已更新（預先衰減 %.1f dB，量測 %s，低音 %+.1f dB，強度 %d%%）",
-                     pre, "有" if measured is not None else "無", cfg.bass_boost_db, cfg.correction_strength)
+        _LOGGER.info(
+            "房間校正 EQ 已更新（預先衰減 %.1f dB，量測 %s，低音 %+.1f dB，強度 %d%%）",
+            pre,
+            "有" if measured is not None else "無",
+            cfg.bass_boost_db,
+            cfg.correction_strength,
+        )
 
     def process(self, x: np.ndarray) -> np.ndarray:
         if self.bypass:
@@ -158,8 +163,13 @@ class CorrectionEngine:
         if cfg.room_correction_enabled and profile is not None and profile.measured_db:
             _, measured = profile.measured()
         corr = dsp.correction_curve(
-            freqs, measured, strength=cfg.correction_strength / 100.0, bass_boost_db=float(cfg.bass_boost_db),
-            limits=dsp.CorrectionLimits(float(cfg.correction_f_low), float(cfg.correction_f_high), float(cfg.correction_max_boost_db)),
+            freqs,
+            measured,
+            strength=cfg.correction_strength / 100.0,
+            bass_boost_db=float(cfg.bass_boost_db),
+            limits=dsp.CorrectionLimits(
+                float(cfg.correction_f_low), float(cfg.correction_f_high), float(cfg.correction_max_boost_db)
+            ),
         )
         out = {"freqs": freqs, "correction": corr}
         if measured is not None:
@@ -187,9 +197,13 @@ class Calibrator:
         self.cancel = threading.Event()
 
     def expected_latency_s(self) -> float:
-        return (self.cfg.airplay_latency_min_ms + self.cfg.receiver_latency_ms + self.cfg.jitter_buffer_ms + 15) / 1000.0
+        return (
+            self.cfg.airplay_latency_min_ms + self.cfg.receiver_latency_ms + self.cfg.jitter_buffer_ms + 15
+        ) / 1000.0
 
-    def measure_position(self, progress: ProgressFn, mic_index: Optional[int] = None) -> tuple[np.ndarray, float, float]:
+    def measure_position(
+        self, progress: ProgressFn, mic_index: Optional[int] = None
+    ) -> tuple[np.ndarray, float, float]:
         """量一個麥克風位置（self.sweeps 次掃頻平均）。回傳 (GRID 上的 dB, snr_db, latency_ms)。"""
         import pyaudiowpatch as pa  # pylint: disable=import-outside-toplevel
 
@@ -197,14 +211,30 @@ class Calibrator:
         try:
             out_info = p.get_default_wasapi_device(d_out=True)
             out_rate = int(out_info["defaultSampleRate"])
-            mic_info = p.get_device_info_by_index(mic_index) if mic_index is not None else p.get_default_input_device_info()
+            mic_info = (
+                p.get_device_info_by_index(mic_index)
+                if mic_index is not None
+                else p.get_default_input_device_info()
+            )
             mic_rate = int(mic_info["defaultSampleRate"])
             mic_ch = int(mic_info["maxInputChannels"])
             sweep_out, _ = dsp.exponential_sweep(out_rate, self.sweep_seconds, amp=self.amp)
             sweep_mic, inv_mic = dsp.exponential_sweep(mic_rate, self.sweep_seconds, amp=self.amp)
-            out = p.open(format=pa.paFloat32, channels=2, rate=out_rate, output=True, output_device_index=int(out_info["index"]))
-            mic = p.open(format=pa.paFloat32, channels=mic_ch, rate=mic_rate, input=True,
-                         input_device_index=int(mic_info["index"]), frames_per_buffer=int(mic_rate * 0.02))
+            out = p.open(
+                format=pa.paFloat32,
+                channels=2,
+                rate=out_rate,
+                output=True,
+                output_device_index=int(out_info["index"]),
+            )
+            mic = p.open(
+                format=pa.paFloat32,
+                channels=mic_ch,
+                rate=mic_rate,
+                input=True,
+                input_device_index=int(mic_info["index"]),
+                frames_per_buffer=int(mic_rate * 0.02),
+            )
             powers = []
             snrs = []
             lats = []
@@ -232,7 +262,9 @@ class Calibrator:
                     stop.set()
                     th.join(2)
                     rec = np.concatenate(chunks).astype(np.float64)
-                    ir, peak = dsp.impulse_response(rec, inv_mic, mic_rate, search_from=0.0, search_to=self.sweep_seconds + 2.0)
+                    ir, peak = dsp.impulse_response(
+                        rec, inv_mic, mic_rate, search_from=0.0, search_to=self.sweep_seconds + 2.0
+                    )
                     origin = len(inv_mic) - 1
                     lat_ms = (peak - origin) / mic_rate * 1000.0
                     # 訊噪比：峰值附近 vs 峰值前 200 ms 的雜訊
@@ -255,7 +287,9 @@ class Calibrator:
             p.terminate()
 
     @staticmethod
-    def finalize(position_dbs: list[np.ndarray], *, mic_cal: Optional[Callable[[np.ndarray], np.ndarray]] = None) -> np.ndarray:
+    def finalize(
+        position_dbs: list[np.ndarray], *, mic_cal: Optional[Callable[[np.ndarray], np.ndarray]] = None
+    ) -> np.ndarray:
         """多位置功率平均 → 麥克風校正 → 1/6 八度平滑 → 以 200 Hz–2 kHz 平均為 0 dB。"""
         avg = 10 * np.log10(np.mean([10 ** (d / 10.0) for d in position_dbs], axis=0) + 1e-20)
         if mic_cal is not None:

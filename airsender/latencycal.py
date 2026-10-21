@@ -29,7 +29,9 @@ MIN_RECEIVER_MS = 100.0  # 比這早的峰值視為電腦喇叭直達聲
 ProgressFn = Callable[[str, float], None]
 
 
-def make_chirp(rate: int, duration: float = 0.05, f0: float = CHIRP_F0, f1: float = CHIRP_F1, amp: float = 0.3) -> np.ndarray:
+def make_chirp(
+    rate: int, duration: float = 0.05, f0: float = CHIRP_F0, f1: float = CHIRP_F1, amp: float = 0.3
+) -> np.ndarray:
     """線性掃頻音。50 ms、1–6 kHz：匹配濾波後的處理增益約 24 dB，對環境雜音有抵抗力。"""
     n = int(rate * duration)
     t = np.arange(n) / rate
@@ -96,7 +98,11 @@ class MicRecorder:
     def __init__(self, p, device_index: Optional[int]):
         import pyaudiowpatch as pa  # pylint: disable=import-outside-toplevel
 
-        info = p.get_device_info_by_index(device_index) if device_index is not None else p.get_default_input_device_info()
+        info = (
+            p.get_device_info_by_index(device_index)
+            if device_index is not None
+            else p.get_default_input_device_info()
+        )
         self.rate = int(info["defaultSampleRate"])
         self.channels = int(info["maxInputChannels"])
         self.name = str(info["name"])
@@ -145,7 +151,9 @@ class LatencyResult:
     repeats: int
     mic_name: str = ""
     output_name: str = ""
-    per_emit: list[list[tuple[float, float, float]]] = field(default_factory=list)  # 每次送出偵測到的 (ms, 強度, 訊噪比)
+    per_emit: list[list[tuple[float, float, float]]] = field(
+        default_factory=list
+    )  # 每次送出偵測到的 (ms, 強度, 訊噪比)
 
     @property
     def consistent(self) -> bool:
@@ -178,7 +186,13 @@ def measure(
     try:
         out_info = p.get_default_wasapi_device(d_out=True)
         out_rate = int(out_info["defaultSampleRate"])
-        out = p.open(format=pa.paFloat32, channels=2, rate=out_rate, output=True, output_device_index=int(out_info["index"]))
+        out = p.open(
+            format=pa.paFloat32,
+            channels=2,
+            rate=out_rate,
+            output=True,
+            output_device_index=int(out_info["index"]),
+        )
         out_latency = float(out.get_output_latency())
         chirp = make_chirp(out_rate, amp=amp)
         stereo = np.column_stack([chirp, chirp]).astype(np.float32).tobytes()

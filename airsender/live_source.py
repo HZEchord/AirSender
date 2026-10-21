@@ -69,9 +69,7 @@ class DriftController:
         error = self._filtered - self.target_ms
         self._integral += self.ki * error * dt
         self._integral = max(-self.max_adj, min(self.max_adj, self._integral))
-        self.adjustment = max(
-            -self.max_adj, min(self.max_adj, self.kp * error + self._integral)
-        )
+        self.adjustment = max(-self.max_adj, min(self.max_adj, self.kp * error + self._integral))
         return self.adjustment
 
     def reset(self) -> None:
@@ -131,7 +129,9 @@ class LiveAudioSource(AudioSource):
         """接收端格式確定後（RTSP 完成 SETUP）由 open_source 補丁呼叫。"""
         expected = 2 if self.bit_depth == 16 else 4  # 24-bit 以 int32 容器承載
         if sample_size != expected:
-            raise NotSupportedError(f"位元深度不符：來源 {self.bit_depth}-bit，接收端要求 {sample_size * 8}-bit 容器")
+            raise NotSupportedError(
+                f"位元深度不符：來源 {self.bit_depth}-bit，接收端要求 {sample_size * 8}-bit 容器"
+            )
         if channels != 2:
             raise NotSupportedError(f"只支援雙聲道接收端（收到 {channels} 聲道）")
         self._sample_rate = sample_rate

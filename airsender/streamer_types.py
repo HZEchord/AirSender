@@ -11,6 +11,8 @@ class State(Enum):
     CONNECTING = "連線中"
     STREAMING = "串流中"
     RECONNECTING = "重新連線中"
+    WAITING = "待命（接收端被占用）"
+    STANDBY = "待命（無聲）"
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,17 @@ class Device:
     kind: str = "airplay"
     url: str = ""  # DLNA：描述檔 URL；Snapcast：port
 
+    def __post_init__(self) -> None:
+        # 名稱 / 型號來自區網（mDNS / SSDP），只留可列印字元並限制長度，避免記錄注入與版面被撐爆
+        object.__setattr__(self, "name", clean_text(self.name, 64))
+        object.__setattr__(self, "model", clean_text(self.model, 64))
+        object.__setattr__(self, "address", clean_text(self.address, 64))
+
     @property
     def label(self) -> str:
         return f"{self.name}（{self.model}，{self.address}）"
+
+
+def clean_text(value: object, limit: int) -> str:
+    text = "".join(ch for ch in str(value or "") if ch.isprintable() and ch not in "\r\n\t")
+    return text[:limit]
