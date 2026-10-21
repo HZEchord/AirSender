@@ -32,8 +32,16 @@
 - 現在的架構一次只串流到一台裝置。「一源多連線」版（一個擷取源餵多條 AirPlay 連線，各自 NTP 同步）能做到跨房間夠用的數毫秒偏差，但同一空間不夠。
 - 毫秒級以下需要 **PTP（IEEE 1588）**：AirPlay 2 的接收端在 buffered 模式用 PTP 對齊，shairport-sync 以 `nqptp` 實作接收端
   （[nqptp 手冊](https://man.archlinux.org/man/nqptp.8.en)：獨占 UDP 319 / 320、需 root）。
-  傳送端要當 PTP 主時鐘並以 buffered 模式送出，pyatv 沒有這部分；唯一的開源傳送端實作是 owntone（C、GPL）。
-- 本專案不販售，GPL 元件可用；若引入 owntone 的做法，整個專案改為 GPL-3.0（見 README 授權）。
+  傳送端要當 PTP 主時鐘並以 buffered 模式送出，pyatv 沒有這部分。可參考的開源傳送端（2026-10 查到，皆未親自驗證）：
+  - [airplay2-rs](https://github.com/lmcgartland/airplay2-rs)（Rust、GPL-3.0、2026-02 標 Alpha）：自稱 PTP 計時與多房間群組串流可用，
+    HomePod mini 實測過；PTP 以較低優先權當 master 讓 HomePod 可搶；ALAC / AAC 編碼；只提 macOS / Linux（319 / 320 要 sudo）。
+  - [streamsemble](https://github.com/aprilmaccydee/streamsemble)（C# / .NET 8、AGPL-3.0）：一個 hub 時鐘獨占 UDP 319 / 320 當 grandmaster，
+    buffered 走 AAC over TCP（type 103），兩台 shairport-sync 量到約 1.8 ms 偏差；HomePod 未測。
+  - owntone（C、GPL）：AirPlay 2 傳送端走 realtime，未見 PTP。
+- Windows 上綁定 UDP 319 / 320 不需要管理員權限（沒有特權埠的概念），只要沒有別的程式占用；時間戳用 QPC（軟體時間戳，
+  數十 µs 抖動），HomePod 端會濾波，毫秒級同步應該夠。單顆 HomePod 就能做並驗證 buffered + PTP（24-bit 由麥克風驗純度、
+  延遲由現有量測工具驗），不必等第二顆。
+- 本專案不販售，GPL / AGPL 元件可用；若引入上述專案的程式碼，整個專案改為對應授權（見 README 授權）。
 
 **實作順序**
 
@@ -68,6 +76,7 @@
 - 代價：buffered 模式需要傳送端提供 PTP 時鐘、以 TCP 送 ALAC 幀、自行編碼 24-bit ALAC；pyatv 完全沒有這些。
   這與第 2 節的多房間 PTP 是同一套工程，做一次可同時得到「24/48 無損」與「毫秒級多房間同步」。
 - buffered 模式的最低延遲未知（shairport-sync 文件只說「很短的延遲後開始播」），需實測。
+- v0.10.0 起「音樂」模式先以 realtime 大緩衝（標準組約 500 ms）代替；buffered + PTP 完成後音樂模式改走該路徑，遊戲 / 影片模式維持 realtime。
 
 碼表來源：[airplay2-rs AIRPLAY_2_SPEC.md](https://github.com/lmcgartland/airplay2-rs/blob/master/AIRPLAY_2_SPEC.md)、
 [SteeBono airplayreceiver wiki](https://github.com/SteeBono/airplayreceiver/wiki/AirPlay2-Protocol)；位元 33 以上無公開對照。

@@ -23,7 +23,14 @@ from typing import TYPE_CHECKING, Any, Optional
 import numpy as np
 
 from . import APP_NAME, __version__, autostart
-from .config import DRIFT_MODES, LATENCY_PRESETS, RESAMPLE_QUALITIES, latency_preset_name
+from .config import (
+    DRIFT_MODES,
+    LATENCY_PRESETS,
+    MODES,
+    RESAMPLE_QUALITIES,
+    latency_preset_name,
+    mode_preset_name,
+)
 from .sinks import HTTP_PULL_KINDS, KIND_LABELS
 from .streamer_types import State
 
@@ -208,6 +215,11 @@ def help_icon(parent, text: str, ui: UiThread):
 
 
 HELP = {
+    "mode": (
+        "遊戲 / 影片：盡量壓低延遲（預設「較低」約 220 ms，可改為「最低」約 140 ms）。\n"
+        "音樂：大緩衝求穩（預設「標準」約 500 ms），Wi-Fi 抖動也不斷音。\n"
+        "兩個模式各自記住一組延遲預設；將來 buffered 模式（24-bit、PTP）完成後，音樂模式會改走該路徑。"
+    ),
     "latency": (
         "總延遲 ≈ HomePod 最小緩衝 + 接收端緩衝 + 抖動緩衝 + 約 15 ms\n"
         "\n"
@@ -423,8 +435,12 @@ class _PanelBase:
             v["bass"].set(float(cfg.bass_boost_db))
             v["strength"].set(float(cfg.correction_strength))
             v["room_enabled"].set(cfg.room_correction_enabled)
-        if "quick_latency" in v:
-            v["quick_latency"].set(latency_preset_name(cfg))
+        if "mode" in v:
+            v["mode"].set(cfg.mode)
+        if "mode_detail" in v:
+            name = mode_preset_name(cfg, cfg.mode)
+            current = latency_preset_name(cfg)
+            v["mode_detail"].set(name.split("（")[0] + ("" if current == name else "（自訂）") + "・" + name.split("（")[1].rstrip("）") if "（" in name else name)
         if "drift" in v:
             v["drift"].set(cfg.drift_compensation)
         if "quality" in v:
@@ -618,19 +634,22 @@ class QuickPanel(_PanelBase):
         ttk.Label(volf, textvariable=v["volume_label"], width=5, anchor="e").grid(row=0, column=1, padx=(6, 0))
         ttk.Checkbutton(volf, text="不控制", variable=v["volume_off"], command=self._on_volume_off).grid(row=0, column=2, padx=(8, 0))
 
-        ttk.Label(outer, text="延遲").grid(row=6, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(outer, text="模式").grid(row=6, column=0, sticky="w", pady=(8, 0))
         seg = ttk.Frame(outer)
-        seg.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
-        v["quick_latency"] = tk.StringVar(value=latency_preset_name(cfg))
-        for name in LATENCY_PRESETS:
+        seg.grid(row=6, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        v["mode"] = tk.StringVar(value=cfg.mode)
+        for key, label in MODES.items():
             ttk.Radiobutton(
                 seg,
-                text=name.split("（")[0],
-                value=name,
-                variable=v["quick_latency"],
+                text=label,
+                value=key,
+                variable=v["mode"],
                 style="Seg.Toolbutton",
-                command=lambda n=name: self._apply_preset(n),
+                command=lambda k=key: self.app._set_mode(k),  # pylint: disable=protected-access
             ).pack(side="left", padx=(0, 4))
+        v["mode_detail"] = tk.StringVar()
+        ttk.Label(seg, textvariable=v["mode_detail"], style="Muted.TLabel", width=16, anchor="w").pack(side="left", padx=(8, 0))
+        help_icon(seg, HELP["mode"], self.ui).pack(side="right")
 
         v["update_text"] = tk.StringVar()
         upd = ttk.Frame(outer)
@@ -793,10 +812,21 @@ class ControlPanel(_PanelBase):
         latf = ttk.LabelFrame(outer, text="延遲", padding=(10, 6))
         latf.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         latf.columnconfigure(1, weight=1)
+        v["mode"] = tk.StringVar(value=cfg.mode)
+        ttk.Label(latf, text="模式").grid(row=0, column=0, sticky="w")
+        mode_row = ttk.Frame(latf)
+        mode_row.grid(row=0, column=1, columnspan=2, sticky="ew", padx=8)
+        for key, label in MODES.items():
+            ttk.Radiobutton(
+                mode_row, text=label, value=key, variable=v["mode"], style="Seg.Toolbutton",
+                command=lambda k=key: self.app._set_mode(k),  # pylint: disable=protected-access
+            ).pack(side="left", padx=(0, 4))
+        help_icon(mode_row, HELP["mode"], self.ui).pack(side="right")
         v["preset"] = tk.StringVar(value=latency_preset_name(cfg))
-        ttk.Label(latf, text="預設組").grid(row=0, column=0, sticky="w")
+        v["preset_label"] = tk.StringVar(value="此模式的預設組")
+        ttk.Label(latf, textvariable=v["preset_label"]).grid(row=1, column=0, sticky="w", pady=(4, 0))
         pc_row = ttk.Frame(latf)
-        pc_row.grid(row=0, column=1, columnspan=2, sticky="ew", padx=8)
+        pc_row.grid(row=1, column=1, columnspan=2, sticky="ew", padx=8, pady=(4, 0))
         pc = ttk.Combobox(pc_row, textvariable=v["preset"], state="readonly", values=list(LATENCY_PRESETS) + ["自訂"], width=18)
         pc.pack(side="left")
         pc.bind("<<ComboboxSelected>>", self._on_preset_selected)
@@ -805,28 +835,28 @@ class ControlPanel(_PanelBase):
         help_icon(pc_row, HELP["latency"], self.ui).pack(side="right")
         v["latency"] = tk.DoubleVar(value=float(cfg.receiver_latency_ms))
         v["latency_label"] = tk.StringVar()
-        ttk.Label(latf, text="接收端緩衝").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(latf, text="接收端緩衝").grid(row=2, column=0, sticky="w", pady=(4, 0))
         s = ttk.Scale(latf, from_=self.LATENCY_MIN, to=self.LATENCY_MAX, variable=v["latency"], command=lambda _v: self._update_labels())
-        s.grid(row=1, column=1, sticky="ew", padx=8, pady=(4, 0))
+        s.grid(row=2, column=1, sticky="ew", padx=8, pady=(4, 0))
         self._bind_drag(s)
         s.bind("<ButtonRelease-1>", lambda _e: self._apply_latency())
-        ttk.Label(latf, textvariable=v["latency_label"], width=8, anchor="e").grid(row=1, column=2, pady=(4, 0))
+        ttk.Label(latf, textvariable=v["latency_label"], width=8, anchor="e").grid(row=2, column=2, pady=(4, 0))
         v["jitter"] = tk.DoubleVar(value=float(cfg.jitter_buffer_ms))
         v["jitter_label"] = tk.StringVar()
-        ttk.Label(latf, text="本機抖動緩衝").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(latf, text="本機抖動緩衝").grid(row=3, column=0, sticky="w", pady=(4, 0))
         s2 = ttk.Scale(latf, from_=self.JITTER_MIN, to=self.JITTER_MAX, variable=v["jitter"], command=lambda _v: self._update_labels())
-        s2.grid(row=2, column=1, sticky="ew", padx=8, pady=(4, 0))
+        s2.grid(row=3, column=1, sticky="ew", padx=8, pady=(4, 0))
         self._bind_drag(s2)
         s2.bind("<ButtonRelease-1>", lambda _e: self._apply_latency())
-        ttk.Label(latf, textvariable=v["jitter_label"], width=8, anchor="e").grid(row=2, column=2, pady=(4, 0))
+        ttk.Label(latf, textvariable=v["jitter_label"], width=8, anchor="e").grid(row=3, column=2, pady=(4, 0))
         v["lmin"] = tk.DoubleVar(value=float(cfg.airplay_latency_min_ms))
         v["lmin_label"] = tk.StringVar()
-        ttk.Label(latf, text="HomePod 最小緩衝").grid(row=3, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(latf, text="HomePod 最小緩衝").grid(row=4, column=0, sticky="w", pady=(4, 0))
         s3 = ttk.Scale(latf, from_=self.LMIN_MIN, to=self.LMIN_MAX, variable=v["lmin"], command=lambda _v: self._update_labels())
-        s3.grid(row=3, column=1, sticky="ew", padx=8, pady=(4, 0))
+        s3.grid(row=4, column=1, sticky="ew", padx=8, pady=(4, 0))
         self._bind_drag(s3)
         s3.bind("<ButtonRelease-1>", lambda _e: self._apply_latency())
-        ttk.Label(latf, textvariable=v["lmin_label"], width=8, anchor="e").grid(row=3, column=2, pady=(4, 0))
+        ttk.Label(latf, textvariable=v["lmin_label"], width=8, anchor="e").grid(row=4, column=2, pady=(4, 0))
 
         # ---- 音質與來源
         qf = ttk.LabelFrame(outer, text="音質與擷取來源", padding=(10, 6))
@@ -1121,7 +1151,7 @@ class ControlPanel(_PanelBase):
     def _on_preset_selected(self, _event=None) -> None:
         name = self._vars["preset"].get()
         if name in LATENCY_PRESETS:
-            self._apply_preset(name)
+            self.app._set_mode_preset(name)  # pylint: disable=protected-access
 
     def _on_drift(self) -> None:
         self.app._set_drift_mode(self._vars["drift"].get())  # pylint: disable=protected-access

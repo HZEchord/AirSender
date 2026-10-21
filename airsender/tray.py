@@ -247,6 +247,34 @@ class TrayApp:
         self.config.dither = not self.config.dither
         self._apply_and_restart()
 
+    def _set_mode(self, mode: str) -> None:
+        from .config import apply_mode  # pylint: disable=import-outside-toplevel
+
+        changed = apply_mode(self.config, mode)
+        self.config.save()
+        if changed:
+            threading.Thread(target=self.streamer.restart, daemon=True).start()
+        self._update_menu()
+        self.panel.refresh()
+        self.quick.refresh()
+
+    def _set_mode_preset(self, name: str) -> None:
+        """把目前模式對應的預設組改為 name 並套用。"""
+        from .config import LATENCY_PRESETS, apply_mode  # pylint: disable=import-outside-toplevel
+
+        if name not in LATENCY_PRESETS:
+            return
+        if self.config.mode == "music":
+            self.config.music_preset = name
+        else:
+            self.config.game_preset = name
+        changed = apply_mode(self.config, self.config.mode)
+        self.config.save()
+        if changed:
+            threading.Thread(target=self.streamer.restart, daemon=True).start()
+        self.panel.refresh()
+        self.quick.refresh()
+
     def _set_airplay_rate(self, value: str) -> None:
         self.config.airplay_sample_rate = value
         self._apply_and_restart()

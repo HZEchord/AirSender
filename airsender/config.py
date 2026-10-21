@@ -25,6 +25,9 @@ LATENCY_PRESETS: dict[str, tuple[int, int, int]] = {
 }
 DEFAULT_LATENCY_PRESET = "低（約 255 ms）"
 
+# 使用模式：遊戲 / 影片 = 盡量壓低延遲；音樂 = 大緩衝求穩（將來 buffered 模式完成後改走 24-bit / PTP）
+MODES: dict[str, str] = {"game": "遊戲 / 影片", "music": "音樂"}
+
 DRIFT_MODES: dict[str, str] = {
     "平滑：可變速率微調（建議）": "smooth",
     "固定比率 VHQ + 裁切": "trim",
@@ -73,10 +76,14 @@ class Config:
     snapcast_servers: list[str] = field(default_factory=list)  # "host" 或 "host:port"
 
     # 延遲相關
-    receiver_latency_ms: int = 150  # 接收端緩衝（RTP 時間戳提前量）
-    airplay_latency_min_ms: int = 50  # AirPlay 2 SETUP 的 latencyMin（HomePod 最小緩衝；pyatv 原本寫死 250）
+    # 使用模式與各模式對應的延遲預設組
+    mode: str = "game"  # game / music
+    game_preset: str = "較低（約 220 ms）"
+    music_preset: str = "標準（約 500 ms）"
+    receiver_latency_ms: int = 150  # 接收端緩衝（RTP 時間戳提前量）；預設三值 = 遊戲模式「較低」組
+    airplay_latency_min_ms: int = 25  # AirPlay 2 SETUP 的 latencyMin（HomePod 最小緩衝；pyatv 原本寫死 250）
     airplay_sample_rate: str = "auto"  # auto / 44100 / 48000；HomePod realtime 實測上限 48 kHz、16-bit 固定
-    jitter_buffer_ms: int = 40  # 本機抖動緩衝（擷取 -> 傳送之間）
+    jitter_buffer_ms: int = 30  # 本機抖動緩衝（擷取 -> 傳送之間）
 
     # 音質相關
     resample_quality: str = "VHQ"  # soxr 品質（固定比率模式）
@@ -131,6 +138,20 @@ class Config:
             )
         except OSError as exc:
             _LOGGER.warning("無法寫入設定檔 %s：%s", path, exc)
+
+
+def mode_preset_name(cfg: Config, mode: str) -> str:
+    name = cfg.game_preset if mode == "game" else cfg.music_preset
+    return name if name in LATENCY_PRESETS else DEFAULT_LATENCY_PRESET
+
+
+def apply_mode(cfg: Config, mode: str) -> bool:
+    """切換模式並套用該模式的延遲預設組；回傳延遲參數是否改變（需重連）。"""
+    cfg.mode = mode if mode in MODES else "game"
+    lmin, lat, jit = LATENCY_PRESETS[mode_preset_name(cfg, cfg.mode)]
+    changed = (lmin, lat, jit) != (cfg.airplay_latency_min_ms, cfg.receiver_latency_ms, cfg.jitter_buffer_ms)
+    cfg.airplay_latency_min_ms, cfg.receiver_latency_ms, cfg.jitter_buffer_ms = lmin, lat, jit
+    return changed
 
 
 def latency_preset_name(cfg: Config) -> str:
