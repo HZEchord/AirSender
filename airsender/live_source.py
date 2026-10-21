@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from typing import Optional
 
@@ -148,7 +149,7 @@ class LiveAudioSource(AudioSource):
         if self.capture:
             self.capture.stop()
         self.capture = WasapiLoopbackCapture(
-            self._ring.push,
+            self._push_timed,
             target_rate=sample_rate,
             target_channels=channels,
             device_index=self._capture_device_index,
@@ -202,6 +203,20 @@ class LiveAudioSource(AudioSource):
         if len(self._ring) < need:
             return None
         return self._ring.pop(need)
+
+    def _push_timed(self, data: bytes) -> None:
+        self._ring.push(data, time.perf_counter_ns())
+
+    def pop_frames_timed(self, nframes: int) -> Optional[tuple[bytes, Optional[int]]]:
+        """同 pop_frames，另回傳最後一個樣本的擷取時刻（perf_counter_ns；擷取區塊抵達時間回推）。"""
+        need = nframes * self._frame_size
+        if len(self._ring) < need:
+            return None
+        data, ts, remaining = self._ring.pop_timed(need)
+        if ts is None:
+            return data, None
+        bytes_per_ns = self._sample_rate * self._frame_size / 1e9
+        return data, ts - int(remaining / bytes_per_ns)
 
     def _align(self, nbytes: int) -> int:
         return nbytes - (nbytes % self._frame_size)

@@ -68,10 +68,10 @@ class LocalClock:
     """單調本機時鐘，以 Unix 奈秒為刻度（起點對齊 time.time_ns，之後只靠 perf_counter 前進）。"""
 
     def __init__(self) -> None:
-        self._base = time.time_ns() - time.perf_counter_ns()
+        self.base_ns = time.time_ns() - time.perf_counter_ns()
 
     def now_ns(self) -> int:
-        return time.perf_counter_ns() + self._base
+        return time.perf_counter_ns() + self.base_ns
 
 
 def pack_timestamp(ns: int) -> bytes:
@@ -352,6 +352,10 @@ class PtpClock:
 
     def master_now_ns(self) -> int:
         return self.to_master_ns(self.clock.now_ns())
+
+    def local_from_perf_ns(self, perf_ns: int) -> int:
+        """把 time.perf_counter_ns() 的時刻換成本機時鐘刻度（與 clock.now_ns 同基準）。"""
+        return perf_ns + self.clock.base_ns
 
     def to_local_ns(self, master_ns: int) -> int:
         offset = self.estimator.offset_ns

@@ -392,6 +392,8 @@ class Streamer:
             "authentication" in lowered or "password" in lowered or "pair" in lowered
         ):
             return message + "；此接收端需要配對或密碼，請在選單「配對與密碼」設定"
+        if "10048" in message or "address already in use" in lowered:
+            return "UDP 319 / 320（PTP）已被占用：另一個 AirSender 或 PTP 程式正在執行，請先關閉它，或把傳輸方式改為 realtime"
         if "no response" in lowered or "timeout" in lowered or "timed out" in lowered:
             present = await self._loop.run_in_executor(None, firewall.rules_present)
             if not present:

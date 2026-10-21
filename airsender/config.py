@@ -128,6 +128,8 @@ class Config:
 
     # 其他
     volume: Optional[int] = None  # None = 不更動接收端音量
+    # 麥克風實測的端對端延遲，依傳輸方式各存一筆：{"ms", "formula_ms", "lead", "preset", "mode", "when", "device", "values"}
+    latency_measured: dict[str, dict] = field(default_factory=dict)
     autostart_stream: bool = False  # 程式啟動後自動連到上次的裝置
     capture_device_index: Optional[int] = None  # None = 跟隨 Windows 預設輸出裝置
     log_level: str = "INFO"
@@ -200,11 +202,32 @@ def apply_mode(cfg: Config, mode: str) -> bool:
     return changed
 
 
-def estimated_latency_ms(cfg: Config) -> int:
-    """依目前模式的傳輸方式估計總延遲。"""
+def latency_formula_ms(cfg: Config) -> int:
+    """依設定值的公式估計（未經麥克風校正）。"""
     if mode_transport(cfg, cfg.mode) == "buffered":
         return cfg.receiver_latency_ms + BUFFERED_OVERHEAD_MS
     return cfg.airplay_latency_min_ms + cfg.receiver_latency_ms + cfg.jitter_buffer_ms + 15
+
+
+def estimated_latency_ms(cfg: Config) -> int:
+    """估計總延遲：有同一傳輸方式的麥克風實測值時，以實測修正公式（實測 − 當時公式 = 固定開銷差）。"""
+    base = latency_formula_ms(cfg)
+    m = cfg.latency_measured.get(mode_transport(cfg, cfg.mode)) if cfg.latency_measured else None
+    if m and isinstance(m.get("ms"), (int, float)) and isinstance(m.get("formula_ms"), (int, float)):
+        return int(round(base + (m["ms"] - m["formula_ms"])))
+    return base
+
+
+def measured_latency_text(cfg: Config) -> str:
+    """狀態文字：「實測 147 ms（10-21 23:40）」；設定已與量測時不同則註明。"""
+    m = cfg.latency_measured.get(mode_transport(cfg, cfg.mode)) if cfg.latency_measured else None
+    if not m or not isinstance(m.get("ms"), (int, float)):
+        return ""
+    same = m.get("formula_ms") == latency_formula_ms(cfg)
+    text = f"實測 {m['ms']:.0f} ms（{m.get('when', '')}"
+    if not same:
+        text += f"，當時「{str(m.get('preset', '')).split('（')[0]}」"
+    return text + "）"
 
 
 def latency_preset_name(cfg: Config) -> str:

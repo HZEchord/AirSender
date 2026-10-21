@@ -128,6 +128,10 @@ AirSenderCLI.exe --device 客廳 --headless --latency 100 --latency-min 25 --jit
 
 ## 量測延遲（用電腦麥克風）
 
+最簡單的方式是控制面板「延遲」區的 **「校正延遲…」**：串流中播 5 聲短促掃頻音、電腦麥克風錄音，
+算出真正的端對端延遲並記住；之後面板的「≈」估計值會以實測修正。量到的數字可直接填進播放器的音訊延遲補償
+（mpv、PotPlayer、VLC），畫面就能完全對上。命令列版本如下：
+
 ```bash
 .venv\Scripts\python tools\measure_latency.py --latency 250 --volume 15 --repeats 6
 ```

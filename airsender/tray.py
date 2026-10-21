@@ -452,6 +452,42 @@ class TrayApp:
         finally:
             roomcal.ENGINE.bypass = False
 
+    def _run_latency_calibration(self, progress) -> str:
+        """在工作執行緒執行：串流中播放測試音、麥克風量端對端延遲，存進設定並回傳摘要。"""
+        from . import latencycal  # pylint: disable=import-outside-toplevel
+        from .config import latency_formula_ms, latency_preset_name, mode_transport  # pylint: disable=import-outside-toplevel
+
+        device = self._current_device()
+        if device is None or device.kind != "airplay":
+            raise RuntimeError("請先選擇 AirPlay 接收端")
+        if not self.streamer.is_active:
+            self.streamer.start(device)
+        t0 = time.monotonic()
+        while self.streamer.state != State.STREAMING and time.monotonic() - t0 < 25:
+            time.sleep(0.3)
+        if self.streamer.state != State.STREAMING:
+            raise RuntimeError("串流尚未開始，無法量測")
+        progress("等待串流穩定", 0.0)
+        time.sleep(3.0)
+        result = latencycal.measure(repeats=5, progress=progress)
+        if not result.consistent:
+            raise RuntimeError("沒有偵測到一致的峰值：請提高接收端音量、降低環境噪音，或把麥克風靠近接收端")
+        transport = mode_transport(self.config, self.config.mode)
+        self.config.latency_measured[transport] = {
+            "ms": int(round(float(result.median_ms))),
+            "formula_ms": latency_formula_ms(self.config),
+            "lead": self.config.receiver_latency_ms,
+            "preset": latency_preset_name(self.config),
+            "mode": self.config.mode,
+            "when": time.strftime("%m-%d %H:%M"),
+            "device": device.name,
+            "values": [round(float(v), 1) for v in result.values_ms],
+        }
+        self.config.save()
+        self.panel.refresh()
+        self.quick.refresh()
+        return result.summary()
+
     # ------------------------------------------------------------ 更新
     def _on_update_available(self, release: Release) -> None:
         self._notify(f"有新版本 v{release.version}，開啟快捷面板或控制面板按「更新」")

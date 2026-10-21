@@ -142,12 +142,14 @@ class BufferedAirPlayStream:
         if self._rtsp is not None:
             await self._rtsp.set_parameter("volume", f"{db:.6f}")
 
+    def _due_ns(self, rtp_time: int) -> int:
+        return self._anchor_master_ns + ((rtp_time - self._anchor_rtp) & 0xFFFFFFFF) * 1_000_000_000 // self.sample_rate
+
     def next_play_lead_ms(self) -> Optional[float]:
         """下一個要送的封包距離播放時刻還有多久（主時鐘）。"""
         if self.ptp is None or self._anchor_rtp is None or not self.ptp.locked:
             return None
-        due = self._anchor_master_ns + ((self._rtp_time - self._anchor_rtp) & 0xFFFFFFFF) * 1_000_000_000 // self.sample_rate
-        return (due - self.ptp.master_now_ns()) / 1e6
+        return (self._due_ns(self._rtp_time) - self.ptp.master_now_ns()) / 1e6
 
     # ------------------------------------------------------------ 主流程
     async def run(self) -> None:
@@ -365,21 +367,44 @@ class BufferedAirPlayStream:
         self._seq = saved_seq
 
     async def _pump(self, reader: asyncio.StreamReader) -> None:
+        """推送迴圈。
+
+        時間錨以**第一個封包的擷取時刻**為準：rtpTime₀ 在主時鐘 master(擷取時刻₀) + 提前量 播放。
+        之後每個封包的「播放時刻 − 擷取時刻」都應等於提前量，漂移控制器就量這個值，
+        不受擷取區塊到達節奏（10 ms 一塊、偶爾成串）影響，每次串流的總延遲也因此一致。
+        """
         src = self.source
         dtype = "<i2" if self.bit_depth == 16 else "<i4"
         packet_ns = FRAMES_PER_PACKET * 1_000_000_000 // self.sample_rate
         silence = np.zeros((FRAMES_PER_PACKET, 2), dtype=np.int32)
+        lead_ns = self.lead_ms * 1_000_000
+        loop = asyncio.get_running_loop()
 
-        # 起始：丟掉握手期間累積的舊資料，只留 prefill
-        src.trim_to_ms(self.prefill_ms)
-        controller = DriftController(float(self.lead_ms + self.prefill_ms))
+        # 起始：丟掉握手期間累積的舊資料，等下一個新鮮的封包
+        src.trim_to_ms(0)
+        controller = DriftController(float(self.lead_ms))
         src.drift = controller
+        first = None
+        deadline = loop.time() + 3.0
+        while first is None and not self._stop.is_set():
+            first = src.pop_frames_timed(FRAMES_PER_PACKET)
+            if first is None:
+                if loop.time() > deadline:
+                    first = (bytes(FRAMES_PER_PACKET * src.frame_size), time.perf_counter_ns())  # 沒聲音：以靜音開始
+                    break
+                await asyncio.sleep(0.002)
+        if first is None:
+            return
+        data, cap_ns = first
+        cap_local = self.ptp.local_from_perf_ns(cap_ns if cap_ns is not None else time.perf_counter_ns())
 
         self._send_primer()
-        anchor_master = self.ptp.master_now_ns() + self.lead_ms * 1_000_000
+        anchor_master = self.ptp.to_master_ns(cap_local) + lead_ns
         await self._set_rate_anchor(self._rtp_time, anchor_master)
+        self._send_frame(np.frombuffer(data, dtype=dtype).reshape(-1, 2))
         _LOGGER.info(
-            "錨定：rtpTime %d 於主時鐘 +%d ms（PTP %s）", self._anchor_rtp, self.lead_ms, self.ptp.summary()
+            "錨定：rtpTime %d = 擷取時刻 + %d ms（擷取到送出 %.1f ms，PTP %s）",
+            self._anchor_rtp, self.lead_ms, (self.ptp.clock.now_ns() - cap_local) / 1e6, self.ptp.summary(),
         )
         src.mark_started()
         if self.on_streaming:
@@ -388,33 +413,33 @@ class BufferedAirPlayStream:
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("on_streaming 回呼失敗")
 
-        target_ns = (self.lead_ms + self.prefill_ms) * 1_000_000
-        fill_trigger_ns = target_ns - 2 * packet_ns  # 落後超過兩個封包才補靜音（擷取區塊 10 ms 的正常抖動不會觸發）
+        fill_trigger_ns = lead_ns - 2 * packet_ns  # 下一個封包的播放時刻逼近到提前量少兩個封包 → 來源停了，補靜音
         last_log = time.monotonic()
         while not self._stop.is_set():
             sent_any = False
-            sent_real = False
             while True:
-                data = src.pop_frames(FRAMES_PER_PACKET)
-                if data is None:
+                item = src.pop_frames_timed(FRAMES_PER_PACKET)
+                if item is None:
                     break
-                samples = np.frombuffer(data, dtype=dtype).reshape(-1, 2)
-                self._send_frame(samples)
-                sent_any = sent_real = True
-            # 來源沒資料（Windows 沒人播音）時補靜音讓時間軸連續：一旦落後就補到目標提前量，
-            # 之後真實資料接上時提前量正好在目標值，漂移控制器不需要修正
+                data, cap_ns = item
+                due = self._due_ns(self._rtp_time)
+                self._send_frame(np.frombuffer(data, dtype=dtype).reshape(-1, 2))
+                sent_any = True
+                if cap_ns is not None:
+                    # 控制量：播放時刻 − 擷取時刻（目標 = 提前量）
+                    value_ms = (due - self.ptp.to_master_ns(self.ptp.local_from_perf_ns(cap_ns))) / 1e6
+                    controller.update(value_ms, loop.time())
+                    self.stats.lead_ms = (due - self.ptp.master_now_ns()) / 1e6  # HomePod 看到的提前量（送出時）
+            # 來源沒資料（Windows 沒人播音）時補靜音讓時間軸連續，補到提前量為止；
+            # 之後真實資料接上時，其播放時刻 − 擷取時刻仍約等於提前量
             lead = self.next_play_lead_ms()
+            if lead is not None and lead * 1e6 < fill_trigger_ns:
+                while lead * 1e6 < lead_ns:
+                    self._send_frame(silence)
+                    self.stats.silence_packets += 1
+                    lead += packet_ns / 1e6
+                sent_any = True
             if lead is not None:
-                if lead * 1e6 < fill_trigger_ns:
-                    while lead * 1e6 < target_ns:
-                        self._send_frame(silence)
-                        self.stats.silence_packets += 1
-                        lead += packet_ns / 1e6
-                    sent_any = True
-                self.stats.lead_ms = lead
-                # 只在送出真實資料時更新漂移控制器：補靜音期間提前量由補償邏輯決定，不代表時鐘差
-                if sent_real:
-                    controller.update(lead, asyncio.get_running_loop().time())
                 jit = self.ptp.estimator.jitter_ns
                 if jit is not None:
                     self.stats.ptp_jitter_ms = jit / 1e6

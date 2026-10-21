@@ -31,6 +31,7 @@ from .config import (
     TRANSPORTS,
     estimated_latency_ms,
     latency_preset_name,
+    measured_latency_text,
     mode_preset_name,
     mode_transport,
     presets_for,
@@ -229,6 +230,13 @@ HELP = {
         "buffered：ALAC 24-bit / 48 kHz 走 TCP，HomePod 依 PTP 時鐘在指定時刻播放；\n"
         "實測提前 60 ms → 總延遲 111 ms、75 → 127、100 → 149、350 → 400 ms，50 ms 以下斷音。\n"
         "兩個模式預設都用 buffered；realtime 是較成熟的路徑，遇到問題可切回。"
+    ),
+    "latency_cal": (
+        "校正延遲：串流中由電腦喇叭輸出 5 聲短促測試音（1–6 kHz 掃頻、音量低），\n"
+        "電腦麥克風錄下接收端發出的聲音，算出真正的端對端延遲（含 Windows 混音、網路、\n"
+        "接收端緩衝與喇叭、空氣傳播）。量完後「≈」的估計值會以實測修正，換預設組也會跟著換算。\n"
+        "需要電腦麥克風；量測時請保持安靜約 20 秒，接收端音量不要太小。\n"
+        "量到的數字可直接填進播放器的音訊延遲補償（mpv、PotPlayer、VLC），畫面就能完全對上。"
     ),
     "latency": (
         "realtime：總延遲 ≈ HomePod 最小緩衝 + 接收端緩衝 + 抖動緩衝 + 約 15 ms，\n"
@@ -869,6 +877,11 @@ class ControlPanel(_PanelBase):
         pc.bind("<<ComboboxSelected>>", self._on_preset_selected)
         v["latency_est"] = tk.StringVar()
         ttk.Label(pc_row, textvariable=v["latency_est"], style="Muted.TLabel", width=12, anchor="w").pack(side="left", padx=(8, 0))
+        v["latency_measured"] = tk.StringVar()
+        self._latcal_btn = ttk.Button(pc_row, text="校正延遲…", command=self._start_latency_calibration)
+        self._latcal_btn.pack(side="left", padx=(8, 0))
+        help_icon(pc_row, HELP["latency_cal"], self.ui).pack(side="left", padx=(2, 0))
+        ttk.Label(pc_row, textvariable=v["latency_measured"], style="Muted.TLabel", anchor="w").pack(side="left", padx=(8, 0))
         help_icon(pc_row, HELP["latency"], self.ui).pack(side="right")
         v["latency"] = tk.DoubleVar(value=float(cfg.receiver_latency_ms))
         v["latency_label"] = tk.StringVar()
@@ -1044,6 +1057,8 @@ class ControlPanel(_PanelBase):
         cfg = self.app.config
         if is_airplay:
             self._vars["latency_est"].set(f"≈ {estimated_latency_ms(cfg)} ms")
+            if not getattr(self, "_latcal_running", False):
+                self._vars["latency_measured"].set(measured_latency_text(cfg))
         elif device is not None:
             self._vars["latency_est"].set("接收端自行緩衝")
         else:
@@ -1062,6 +1077,7 @@ class ControlPanel(_PanelBase):
                 text += f" · 預衰 {ENGINE.pre_gain_db:.0f} dB"
             self._vars["room_status"].set(text)
         self._cal_btn.state(["disabled"] if getattr(self, "_cal_running", False) else ["!disabled"])
+        self._latcal_btn.state(["disabled"] if getattr(self, "_latcal_running", False) or not is_airplay else ["!disabled"])
         self._draw_curves()
         from .updater import describe_last_check  # pylint: disable=import-outside-toplevel
 
@@ -1121,6 +1137,32 @@ class ControlPanel(_PanelBase):
     def _apply_strength(self) -> None:
         self._dragging = False
         self.app._set_correction_strength(int(round(self._vars["strength"].get() / 5) * 5))  # pylint: disable=protected-access
+
+    def _start_latency_calibration(self) -> None:
+        from .dialogs import ask_yes_no  # pylint: disable=import-outside-toplevel
+
+        def worker() -> None:
+            if not ask_yes_no(
+                "校正延遲會在串流中播放 5 聲短促測試音（低音量），並用電腦麥克風錄音約 20 秒。\n"
+                "請確認接收端音量不要太小、環境安靜。\n\n要開始嗎？"
+            ):
+                return
+            self._latcal_running = True
+
+            def progress(msg: str, frac: float) -> None:
+                self.ui.call(lambda: self._vars["latency_measured"].set(f"量測中… {msg}（{frac * 100:.0f}%）"))
+
+            try:
+                summary = self.app._run_latency_calibration(progress)  # pylint: disable=protected-access
+                self.ui.call(lambda: self._vars["latency_measured"].set(f"實測 {summary}"))
+            except Exception as exc:  # pylint: disable=broad-except
+                message = f"量測失敗：{exc}"
+                self.ui.call(lambda: self._vars["latency_measured"].set(message))
+            finally:
+                self._latcal_running = False
+                self.refresh()
+
+        _run_bg(worker)
 
     def _start_calibration(self) -> None:
         from .dialogs import ask_string  # pylint: disable=import-outside-toplevel
