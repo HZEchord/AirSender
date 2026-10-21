@@ -380,6 +380,12 @@ class TrayApp:
         self._notify(f"已清除 {device.name} 的配對與密碼")
         self._update_menu()
 
+    def _set_mute_local(self, enabled: bool) -> None:
+        self.config.mute_local_output = bool(enabled)
+        self.config.save()
+        if self.streamer.state == State.STREAMING:
+            self.streamer.apply_local_mute(bool(enabled))
+
     def _toggle_autostart_stream(self) -> None:
         self.config.autostart_stream = not self.config.autostart_stream
         self.config.save()

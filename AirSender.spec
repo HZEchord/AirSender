@@ -18,6 +18,10 @@ hidden = (
         "pyaudiowpatch",
         "miniaudio",
         "numpy",
+        "pycaw",
+        "pycaw.pycaw",
+        "comtypes",
+        "comtypes.gen",
     ]
 )
 datas = (

@@ -16,6 +16,7 @@ AirSender 本身以 MIT 授權釋出（見 LICENSE）。打包版（`dist\AirSen
 | aiohttp | HTTP 串流伺服器 | Apache-2.0 | https://github.com/aio-libs/aiohttp |
 | PyChromecast | Google Cast 控制 | MIT | https://github.com/home-assistant-libs/pychromecast |
 | async-upnp-client | DLNA / UPnP 控制 | Apache-2.0 | https://github.com/StevenLooman/async_upnp_client |
+| pycaw + comtypes | 串流時靜音電腦輸出端點（Windows Core Audio） | MIT | https://github.com/AndreMiras/pycaw 、 https://github.com/enthought/comtypes |
 | cryptography | HAP 加密（pyatv 依賴） | Apache-2.0 / BSD-3-Clause | https://github.com/pyca/cryptography |
 | miniaudio（pyatv 依賴） | 音訊解碼 | MIT | https://github.com/irmen/pyminiaudio |
 | pydantic、protobuf、requests、srptools、chacha20poly1305-reuseable、tabulate、ifaddr 等 | pyatv / pychromecast 依賴 | MIT / BSD / Apache-2.0 | 見各套件 |

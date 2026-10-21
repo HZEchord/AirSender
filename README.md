@@ -101,6 +101,7 @@ python -m venv .venv
 - **接收端**：列出網路上的 AirPlay 裝置，點選即開始串流；「重新掃描」更新清單
 - **開始 / 停止串流**：左鍵雙擊圖示也可切換
 - **接收端音量**：直接控制 HomePod 音量（或選「不控制」）
+- **串流時靜音電腦輸出**（控制面板最下方的選項）：電腦這邊不出聲、HomePod 照常；USB DAC / HDMI / 藍牙等硬體靜音的裝置適用，內建類比輸出可能連擷取一起靜音
 - **延遲**：模式（遊戲 / 影片 = 盡量壓低延遲，預設 buffered「較低」約 130 ms；音樂 = 大緩衝求穩，預設 buffered「標準」約 250 ms），
   每個模式記住自己的傳輸方式（realtime / buffered）與預設組（最低 / 較低 / 低 / 標準 / 高 / 最穩）；realtime 可再個別調整 HomePod 最小緩衝、接收端緩衝、本機抖動緩衝
 - **音質**：
@@ -260,6 +261,8 @@ HomePod 的運算音訊（房間感測、低音管理）只對 Apple 自家來�
 | 聲音與畫面對不上 | AirPlay 本質延遲，可用播放器（VLC、mpv）把音訊提前對應的毫秒數 |
 
 ## 架構
+
+完整的技術說明（原理、實測數字、技術債）在 [docs/TECHNICAL.md](docs/TECHNICAL.md)。
 
 ```
 Windows 混音 ──WASAPI loopback──▶ capture.py（soxr 重取樣 + dither，16 或 24-bit）

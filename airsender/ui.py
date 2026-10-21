@@ -274,6 +274,12 @@ HELP = {
         "倉庫為私有或離線時會顯示「無法取得」。\n"
         "天數設 0 代表不自動檢查。"
     ),
+    "mute": (
+        "串流中把電腦這邊的輸出端點靜音，停止串流或結束程式時還原。\n"
+        "USB DAC、HDMI、藍牙等以硬體套用靜音的裝置，靜音不影響擷取（實測 FiiO KA13 可用）；\n"
+        "內建 Realtek 類比輸出等以軟體套用音量的裝置，靜音後擷取也會變無聲，HomePod 會跟著沒聲音。\n"
+        "使用者自己已靜音的端點不會被動。"
+    ),
     "firewall": (
         "AirPlay 2 需要接收端反向連回電腦；Cast / DLNA 需要多播回應與連入 TCP 8765。\n"
         "安裝程式通常已加入規則；若連線一直逾時，按此以系統管理員身分補上。"
@@ -338,15 +344,25 @@ class _PanelBase:
             keys.append("")
         return names, keys
 
+    @staticmethod
+    def _dropdown_open(combo) -> bool:
+        try:
+            popdown = combo.tk.call("ttk::combobox::PopdownWindow", str(combo))
+            return bool(int(combo.tk.call("winfo", "ismapped", popdown)))
+        except Exception:  # pylint: disable=broad-except
+            return False
+
     def _fill_device_combo(self, combo) -> None:
+        if self._dropdown_open(combo):
+            return  # 使用者正在選，不要動清單
         names, keys = self._device_names()
         self._device_keys = keys
-        combo["values"] = names
+        if list(combo["values"]) != names:
+            combo["values"] = names
         current = self.app._current_device()  # pylint: disable=protected-access
-        if current and current.identifier in keys:
-            combo.current(keys.index(current.identifier))
-        elif names:
-            combo.current(0)
+        want = keys.index(current.identifier) if current and current.identifier in keys else (0 if names else -1)
+        if want >= 0 and combo.current() != want:
+            combo.current(want)
         # 下拉顯示的裝置就是目前選擇
         idx = combo.current()
         if 0 <= idx < len(keys) and keys[idx]:
@@ -406,7 +422,7 @@ class _PanelBase:
         stats = "  ".join(x for x in (f["buf"], f["ppm"], f["underrun"]) if x)
         return f["title"], "\n".join(x for x in (detail, stats) if x)
 
-    def _build_stats_row(self, parent, row: int) -> None:
+    def _build_stats_row(self, parent, row: int, *, help_text: bool = True) -> None:
         """四個固定寬度的統計欄位（等寬字型），加上「?」說明。"""
         import tkinter as tk  # pylint: disable=import-outside-toplevel
         from tkinter import ttk  # pylint: disable=import-outside-toplevel
@@ -417,7 +433,8 @@ class _PanelBase:
         for key, width in (("buf", 11), ("ppm", 14), ("underrun", 15), ("retx", 11), ("overflow", 11)):
             v[f"stat_{key}"] = tk.StringVar()
             ttk.Label(frame, textvariable=v[f"stat_{key}"], style="Mono.TLabel", width=width, anchor="w").pack(side="left")
-        help_icon(frame, HELP["stats"], self.ui).pack(side="left", padx=(4, 0))
+        if help_text:
+            help_icon(frame, HELP["stats"], self.ui).pack(side="left", padx=(4, 0))
         self._stats_frame = frame
         frame.grid_remove()
 
@@ -487,6 +504,8 @@ class _PanelBase:
             v["rate"].set(next((k for k, val in RATE_CHOICES.items() if val == cfg.airplay_sample_rate), "自動"))
         if "auto_stream" in v:
             v["auto_stream"].set(cfg.autostart_stream)
+        if "mute_local" in v:
+            v["mute_local"].set(cfg.mute_local_output)
         if "auto_win" in v:
             v["auto_win"].set(autostart.is_enabled())
         if "toggle_text" in v:
@@ -642,7 +661,7 @@ class QuickPanel(_PanelBase):
         ttk.Label(outer, textvariable=v["detail"], style="Muted.TLabel", width=56, anchor="w").grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(2, 0)
         )
-        self._build_stats_row(outer, 2)
+        self._build_stats_row(outer, 2, help_text=False)
 
         v["toggle_text"] = tk.StringVar(value="開始串流")
         btns = ttk.Frame(outer)
@@ -685,7 +704,6 @@ class QuickPanel(_PanelBase):
             ).pack(side="left", padx=(0, 4))
         v["mode_detail"] = tk.StringVar()
         ttk.Label(seg, textvariable=v["mode_detail"], style="Muted.TLabel", width=16, anchor="w").pack(side="left", padx=(8, 0))
-        help_icon(seg, HELP["mode"], self.ui).pack(side="right")
 
         v["update_text"] = tk.StringVar()
         upd = ttk.Frame(outer)
@@ -702,14 +720,34 @@ class QuickPanel(_PanelBase):
         self._hide()
         self.app.panel.show()
 
+    def _pointer_inside(self) -> bool:
+        try:
+            x, y = self.win.winfo_pointerx(), self.win.winfo_pointery()
+            left, top = self.win.winfo_rootx(), self.win.winfo_rooty()
+            if left <= x < left + self.win.winfo_width() and top <= y < top + self.win.winfo_height():
+                return True
+            combo = self._device_combo
+            popdown = combo.tk.call("ttk::combobox::PopdownWindow", str(combo))
+            if int(combo.tk.call("winfo", "ismapped", popdown)):
+                px, py = int(combo.tk.call("winfo", "rootx", popdown)), int(combo.tk.call("winfo", "rooty", popdown))
+                pw, ph = int(combo.tk.call("winfo", "width", popdown)), int(combo.tk.call("winfo", "height", popdown))
+                return px <= x < px + pw and py <= y < py + ph
+        except Exception:  # pylint: disable=broad-except
+            return True
+        return False
+
     def _on_focus_out(self, _event=None) -> None:
-        # 下拉選單展開時焦點會暫時跑到 popdown；延遲後確認焦點真的離開本程式才收起
+        # 下拉選單展開時焦點會暫時跑到 popdown（不在 Python 的 widget 表裡，focus_get 會丟例外）；
+        # 延遲後確認：焦點真的離開本程式、下拉沒展開、滑鼠也不在面板上，才收起
         def check():
+            if not self._visible():
+                return
             try:
-                if self._visible() and self.win.focus_get() is None:
-                    self._hide()
+                focus = self.win.focus_get()
             except Exception:  # pylint: disable=broad-except
-                pass
+                return  # 焦點在 popdown
+            if focus is None and not self._dropdown_open(self._device_combo) and not self._pointer_inside():
+                self._hide()
 
         self.win.after(150, check)
 
@@ -1020,6 +1058,11 @@ class ControlPanel(_PanelBase):
         ttk.Checkbutton(opt, text="登入時自動啟動", variable=v["auto_win"], command=self._on_auto_win).grid(
             row=0, column=1, sticky="w", padx=(12, 0)
         )
+        v["mute_local"] = tk.BooleanVar(value=cfg.mute_local_output)
+        ttk.Checkbutton(opt, text="串流時靜音電腦輸出", variable=v["mute_local"], command=self._on_mute_local).grid(
+            row=0, column=2, sticky="w", padx=(12, 0)
+        )
+        help_icon(opt, HELP["mute"], self.ui).grid(row=0, column=3, sticky="w", padx=(2, 0))
         btns = ttk.Frame(outer)
         btns.grid(row=9, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(btns, text="防火牆規則", command=self.app._add_firewall_rules).pack(side="left")  # pylint: disable=protected-access
@@ -1245,6 +1288,9 @@ class ControlPanel(_PanelBase):
         idx = self._capture_combo.current()
         if 0 <= idx < len(self._capture_keys):
             self.app._set_capture_device(self._capture_keys[idx])  # pylint: disable=protected-access
+
+    def _on_mute_local(self) -> None:
+        self.app._set_mute_local(self._vars["mute_local"].get())  # pylint: disable=protected-access
 
     def _on_auto_stream(self) -> None:
         self.app.config.autostart_stream = self._vars["auto_stream"].get()

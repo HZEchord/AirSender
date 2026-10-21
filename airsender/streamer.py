@@ -21,7 +21,7 @@ import pyatv
 from pyatv.const import Protocol
 from pyatv.interface import MediaMetadata
 
-from . import APP_NAME, firewall, formats, pairing, patches, roomcal
+from . import APP_NAME, firewall, formats, localmute, pairing, patches, roomcal
 from .buffered import BufferedAirPlayStream, BufferedStats
 from .capture import CaptureStatus
 from .config import Config
@@ -87,9 +87,17 @@ class Streamer:
             _enable_high_resolution_timer()
             self._thread.start()
 
+    def apply_local_mute(self, muted: bool) -> None:
+        """在背景執行緒靜音 / 還原擷取來源對應的輸出端點（不阻塞串流迴圈）。"""
+        cap = self.capture_status
+        name = cap.device_name if cap and cap.device_name else None
+        threading.Thread(target=localmute.set_muted, args=(muted, name), daemon=True, name="local-mute").start()
+
     def shutdown(self) -> None:
         with suppress(Exception):
             self.stop()
+        with suppress(Exception):
+            localmute.restore()
         with suppress(Exception):
             asyncio.run_coroutine_threadsafe(self.http.stop(), self._loop).result(5)
         self._loop.call_soon_threadsafe(self._loop.stop)
@@ -229,9 +237,14 @@ class Streamer:
             self.config.save()
 
     def _set_state(self, state: State, message: str = "") -> None:
+        was_streaming = self.state == State.STREAMING
         self.state = state
         self.message = message
         _LOGGER.info("狀態：%s %s", state.value, message)
+        if state == State.STREAMING and not was_streaming and self.config.mute_local_output:
+            self.apply_local_mute(True)
+        elif was_streaming and state != State.STREAMING:
+            self.apply_local_mute(False)
         if self._on_state:
             try:
                 self._on_state(state, message)

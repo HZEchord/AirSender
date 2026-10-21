@@ -131,6 +131,7 @@ class Config:
     # 麥克風實測的端對端延遲，依傳輸方式各存一筆：{"ms", "formula_ms", "lead", "preset", "mode", "when", "device", "values"}
     latency_measured: dict[str, dict] = field(default_factory=dict)
     autostart_stream: bool = False  # 程式啟動後自動連到上次的裝置
+    mute_local_output: bool = False  # 串流中把電腦的輸出端點靜音（硬體靜音的裝置 loopback 不受影響）
     capture_device_index: Optional[int] = None  # None = 跟隨 Windows 預設輸出裝置
     log_level: str = "INFO"
 
