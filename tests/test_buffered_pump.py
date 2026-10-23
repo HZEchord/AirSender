@@ -24,6 +24,7 @@ class FakePtp:
         self.locked = True
         self.base = time.time_ns() - time.perf_counter_ns()
         self.offset = 1_000_000_000
+        self.last_follow_up_ns = None  # 看門狗：None = 不檢查 PTP 沉默
 
         class _Clock:
             def __init__(self_, outer):
@@ -247,6 +248,57 @@ class BufferedPumpTests(unittest.TestCase):
         rtps = [p[1] for p in pkts[1:]]
         self.assertTrue(any(r < FRAME * 4 for r in rtps), "時間戳應繞回 0 附近")
         self.assertIsNotNone(st.next_play_lead_ms())
+
+    def test_runaway_lead_triggers_reconnect(self):
+        """主時鐘估計突然往前跳 1 秒（等同接收端時間軸跑掉）→ 提前量失控 → 幾秒內拋出例外讓串流重連。"""
+        buffered.RUNAWAY_SECONDS = 0.3
+        try:
+
+            async def main():
+                st, _anchors = _make_stream(100)
+                src = FakeSource()
+                st.source = src
+                pump = asyncio.ensure_future(st._pump(FakeReader()))  # pylint: disable=protected-access
+                for _ in range(15):
+                    src.feed_realtime()
+                    await asyncio.sleep(0.01)
+                st.ptp.offset += 1_000_000_000  # 本機 − 主時鐘 的估計多了 1 秒 → master_now 變小 → lead 暴增
+                with self.assertRaises(RuntimeError) as ctx:
+                    deadline = asyncio.get_running_loop().time() + 3.0
+                    while asyncio.get_running_loop().time() < deadline:
+                        src.feed_realtime()
+                        await asyncio.sleep(0.01)
+                        if pump.done():
+                            pump.result()
+                    self.fail("看門狗沒有觸發")
+                self.assertIn("提前量失控", str(ctx.exception))
+
+            asyncio.run(main())
+        finally:
+            buffered.RUNAWAY_SECONDS = 5.0
+
+    def test_ptp_stale_triggers_reconnect(self):
+        buffered.PTP_STALE_SECONDS = 0.2
+        try:
+
+            async def main():
+                st, _anchors = _make_stream(100)
+                src = FakeSource()
+                st.source = src
+                st.ptp.last_follow_up_ns = st.ptp.clock.now_ns() - 10_000_000_000
+                pump = asyncio.ensure_future(st._pump(FakeReader()))  # pylint: disable=protected-access
+                with self.assertRaises(RuntimeError) as ctx:
+                    for _ in range(60):
+                        src.feed_realtime()
+                        await asyncio.sleep(0.01)
+                        if pump.done():
+                            pump.result()
+                    self.fail("看門狗沒有觸發")
+                self.assertIn("Follow_Up", str(ctx.exception))
+
+            asyncio.run(main())
+        finally:
+            buffered.PTP_STALE_SECONDS = 15.0
 
 
 if __name__ == "__main__":

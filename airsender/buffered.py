@@ -49,6 +49,11 @@ EVENTS_READ_INFO = "Events-Read-Encryption-Key"
 STREAM_TYPE_BUFFERED = 103
 FRAMES_PER_PACKET = alac.FRAME_LENGTH
 FEEDBACK_INTERVAL = 2.0
+# 看門狗：提前量失控（超過目標 + 這個量，持續這麼久）或 PTP 主時鐘沉默太久就重新連線，不讓延遲慢慢累積到秒級
+RUNAWAY_LEAD_MS = 400.0
+RUNAWAY_SECONDS = 5.0
+SATURATED_SECONDS = 120.0
+PTP_STALE_SECONDS = 15.0
 
 # audioFormat 旗標（/info supportedFormats 的位元）與封包 SSRC 格式碼
 AUDIO_FORMAT = {(44100, 16): 0x40000, (44100, 24): 0x80000, (48000, 16): 0x100000, (48000, 24): 0x200000}
@@ -441,6 +446,9 @@ class BufferedAirPlayStream:
             lead_ns - 2 * packet_ns
         )  # 下一個封包的播放時刻逼近到提前量少兩個封包 → 來源停了，補靜音
         last_log = time.monotonic()
+        last_info_log = time.monotonic()
+        runaway_since: Optional[float] = None
+        saturated_since: Optional[float] = None
         while not self._stop.is_set():
             sent_any = False
             while True:
@@ -478,8 +486,34 @@ class BufferedAirPlayStream:
                     raise RuntimeError("接收端停止讀取音訊（5 秒），重新連線") from exc
             if reader.at_eof():
                 raise RuntimeError("接收端關閉了音訊連線")
-            if time.monotonic() - last_log > 5.0:
-                last_log = time.monotonic()
+            now_mono = time.monotonic()
+            # ---- 看門狗
+            if lead is not None and lead > self.lead_ms + RUNAWAY_LEAD_MS:
+                runaway_since = runaway_since or now_mono
+                if now_mono - runaway_since > RUNAWAY_SECONDS:
+                    raise RuntimeError(
+                        f"提前量失控（{lead:.0f} ms，目標 {self.lead_ms} ms；漂移補償 {controller.adjustment * 1e6:+.0f} ppm，"
+                        f"PTP {self.ptp.summary()}），重新連線"
+                    )
+            else:
+                runaway_since = None
+            if abs(controller.adjustment) >= controller.max_adj * 0.999:
+                saturated_since = saturated_since or now_mono
+                if now_mono - saturated_since > SATURATED_SECONDS:
+                    raise RuntimeError(
+                        f"漂移補償飽和超過 {SATURATED_SECONDS:.0f} 秒（{controller.adjustment * 1e6:+.0f} ppm，"
+                        f"提前量 {self.stats.lead_ms:.0f} ms），來源與接收端時鐘差異過大或 PTP 異常，重新連線"
+                    )
+            else:
+                saturated_since = None
+            if self.ptp.last_follow_up_ns is not None:
+                stale_s = (self.ptp.clock.now_ns() - self.ptp.last_follow_up_ns) / 1e9
+                if stale_s > PTP_STALE_SECONDS:
+                    raise RuntimeError(
+                        f"PTP 主時鐘 {stale_s:.0f} 秒沒有 Follow_Up（{self.ptp.summary()}），重新連線"
+                    )
+            if now_mono - last_log > 5.0:
+                last_log = now_mono
                 self.stats.ptp_summary = self.ptp.summary()
                 _LOGGER.debug(
                     "buffered：lead %.1f ms，封包 %d（靜音 %d），漂移 %+.0f ppm，%s",
@@ -488,5 +522,18 @@ class BufferedAirPlayStream:
                     self.stats.silence_packets,
                     controller.adjustment * 1e6,
                     self.stats.ptp_summary,
+                )
+            if now_mono - last_info_log > 60.0:
+                last_info_log = now_mono
+                _LOGGER.info(
+                    "buffered 狀態：提前 %.0f ms（目標 %d），漂移 %+.0f ppm，封包 %d，補靜音 %d，PTP 路徑 %.2f ms 抖動 %.2f ms 拒絕 %d",
+                    self.stats.lead_ms,
+                    self.lead_ms,
+                    controller.adjustment * 1e6,
+                    self.stats.packets,
+                    self.stats.silence_packets,
+                    (self.ptp.estimator.path_delay_ns or 0) / 1e6,
+                    (self.ptp.estimator.jitter_ns or 0) / 1e6,
+                    self.ptp.estimator.rejected,
                 )
             await asyncio.sleep(0.002)

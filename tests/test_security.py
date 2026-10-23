@@ -99,6 +99,23 @@ class PtpSpoofTests(unittest.TestCase):
         self.assertEqual(est.rejected, 1)
         self.assertEqual(est.offset_ns, 5_000_000)
 
+    def test_estimator_relearns_after_real_clock_step(self):
+        est = ptp.OffsetEstimator()
+        for i in range(8):
+            est.add_master_to_local(i * 125_000_000, 5_000_000)
+        for i in range(ptp.OffsetEstimator.RESET_AFTER_REJECTS):  # 主時鐘真的跳了 10 秒：連續不合理
+            est.add_master_to_local(10**9 + i * 125_000_000, 10_005_000_000)
+        self.assertEqual(est.offset_ns, 10_005_000_000, "連續拒絕達門檻後清空視窗、採用新值")
+
+    def test_estimator_trims_expired_samples_before_judging(self):
+        est = ptp.OffsetEstimator(window_ns=1_000_000_000)
+        for i in range(6):
+            est.add_master_to_local(i * 100_000_000, 5_000_000)
+        est.add_master_to_local(
+            30_000_000_000, 7_000_000_000
+        )  # 30 秒後第一個樣本：舊視窗已過期，不應被舊中位數擋下
+        self.assertEqual(est.offset_ns, 7_000_000_000)
+
     def test_reply_rate_limited(self):
         sent = []
         self.clock._send = lambda port, data: sent.append(port)  # type: ignore[method-assign]  # pylint: disable=protected-access

@@ -264,7 +264,9 @@ class OffsetEstimator:
             dq.popleft()
 
     OUTLIER_NS = 1_000_000_000  # 與目前中位數差超過 1 秒的樣本視為異常（偽造或壞封包），不採用
+    RESET_AFTER_REJECTS = 24  # 連續拒絕這麼多次（約 3 秒）= 主時鐘真的跳了，清空視窗重新學
     rejected = 0
+    _consecutive_rejects = 0
 
     def _plausible(self, dq: collections.deque[tuple[int, int]], value: int) -> bool:
         if len(dq) < 4:
@@ -273,21 +275,32 @@ class OffsetEstimator:
         median = values[len(values) // 2]
         return abs(value - median) <= self.OUTLIER_NS
 
-    def add_master_to_local(self, local_ns: int, m_ns: int) -> None:
-        if not self._plausible(self._m, m_ns):
+    def _accept(self, dq: collections.deque[tuple[int, int]], local_ns: int, value: int) -> bool:
+        self._trim(dq, local_ns)  # 先丟掉過期樣本，再判斷合理性（否則視窗停擺時會永遠拒絕）
+        if not self._plausible(dq, value):
             self.rejected += 1
-            return
-        self._m.append((local_ns, m_ns))
-        self.samples_m += 1
-        self._trim(self._m, local_ns)
+            self._consecutive_rejects += 1
+            if self._consecutive_rejects >= self.RESET_AFTER_REJECTS:
+                _LOGGER.warning(
+                    "PTP 連續 %d 個樣本不合理，主時鐘可能重設，清空偏移視窗重新學習",
+                    self._consecutive_rejects,
+                )
+                self._m.clear()
+                self._s.clear()
+                self._consecutive_rejects = 0
+            else:
+                return False
+        self._consecutive_rejects = 0
+        dq.append((local_ns, value))
+        return True
+
+    def add_master_to_local(self, local_ns: int, m_ns: int) -> None:
+        if self._accept(self._m, local_ns, m_ns):
+            self.samples_m += 1
 
     def add_local_to_master(self, local_ns: int, s_ns: int) -> None:
-        if not self._plausible(self._s, s_ns):
-            self.rejected += 1
-            return
-        self._s.append((local_ns, s_ns))
-        self.samples_s += 1
-        self._trim(self._s, local_ns)
+        if self._accept(self._s, local_ns, s_ns):
+            self.samples_s += 1
 
     @property
     def ready(self) -> bool:
