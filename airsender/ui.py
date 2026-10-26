@@ -422,13 +422,13 @@ class _PanelBase:
             if bst is not None and src is not None:
                 out["source"] += f" · {src.bit_depth}-bit"
                 out["buf"] = f"提前 {min(bst.lead_ms, 999):>3.0f} ms"
-                out["ppm"] = f"漂移 {max(-999, min(999, src.drift_ppm)):>+4.0f} ppm"
+                out["ppm"] = f"漂移 {max(-9999, min(9999, src.drift_ppm)):>+5.0f} ppm"
                 out["underrun"] = f"補靜音 {min(bst.silence_packets, 99999):>5d}"
                 out["overflow"] = f"溢位 {min(cap.overflows, 99999):>5d}"
                 out["retx"] = f"PTP {min(bst.ptp_jitter_ms, 99.9):>4.1f}ms"
             elif src is not None:
                 out["buf"] = f"緩衝 {min(src.buffered_ms, 999):>3.0f} ms"
-                out["ppm"] = f"漂移 {max(-999, min(999, src.drift_ppm)):>+4.0f} ppm"
+                out["ppm"] = f"漂移 {max(-9999, min(9999, src.drift_ppm)):>+5.0f} ppm"
                 out["underrun"] = f"underrun {min(src.underruns, 99999):>5d}"
                 out["overflow"] = f"溢位 {min(cap.overflows, 99999):>5d}"
                 from .patches import stats as patch_stats  # pylint: disable=import-outside-toplevel

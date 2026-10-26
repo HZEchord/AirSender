@@ -52,7 +52,7 @@ FEEDBACK_INTERVAL = 2.0
 # 看門狗：提前量失控（超過目標 + 這個量，持續這麼久）或 PTP 主時鐘沉默太久就重新連線，不讓延遲慢慢累積到秒級
 RUNAWAY_LEAD_MS = 400.0
 RUNAWAY_SECONDS = 5.0
-SATURATED_SECONDS = 120.0
+BUFFERED_MAX_ADJ = 3e-3  # 漂移補償上限 ±0.3%
 PTP_STALE_SECONDS = 15.0
 
 # audioFormat 旗標（/info supportedFormats 的位元）與封包 SSRC 格式碼
@@ -405,7 +405,8 @@ class BufferedAirPlayStream:
 
         # 起始：丟掉握手期間累積的舊資料，等下一個新鮮的封包
         src.trim_to_ms(0)
-        controller = DriftController(float(self.lead_ms))
+        # buffered：來源裝置（例如 USB DAC 在 192 kHz）與 HomePod 時鐘差可達 ±0.1% 以上，上限放寬到 ±0.3%（約 5 音分）
+        controller = DriftController(float(self.lead_ms), max_adj=BUFFERED_MAX_ADJ)
         src.drift = controller
         first = None
         deadline = loop.time() + 3.0
@@ -497,12 +498,14 @@ class BufferedAirPlayStream:
                     )
             else:
                 runaway_since = None
+            # 漂移補償飽和不再重連（提前量仍在目標就沒問題，0.14.1 每 2 分鐘重連是誤判）；只警告一次供診斷
             if abs(controller.adjustment) >= controller.max_adj * 0.999:
-                saturated_since = saturated_since or now_mono
-                if now_mono - saturated_since > SATURATED_SECONDS:
-                    raise RuntimeError(
-                        f"漂移補償飽和超過 {SATURATED_SECONDS:.0f} 秒（{controller.adjustment * 1e6:+.0f} ppm，"
-                        f"提前量 {self.stats.lead_ms:.0f} ms），來源與接收端時鐘差異過大或 PTP 異常，重新連線"
+                if saturated_since is None:
+                    saturated_since = now_mono
+                    _LOGGER.warning(
+                        "漂移補償到達上限 %+.0f ppm（提前量 %.0f ms）：來源裝置與接收端的時鐘差異很大，若提前量開始偏離會自動重連",
+                        controller.adjustment * 1e6,
+                        self.stats.lead_ms,
                     )
             else:
                 saturated_since = None

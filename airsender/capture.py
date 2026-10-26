@@ -22,7 +22,7 @@ import soxr
 _LOGGER = logging.getLogger(__name__)
 
 # 可變速率模式允許的最大比率調整（±0.2%）；實際由 DriftController 限制在更小範圍
-MAX_RATE_ADJUST = 0.002
+MAX_RATE_ADJUST = 0.004  # 可變比率段的硬上限（±0.4%）；控制器自己的上限較小
 
 
 SILENCE_THRESHOLD = 1e-4  # 約 -80 dBFS；低於此視為無聲
